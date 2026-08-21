@@ -1,7 +1,7 @@
 /**
  * FingerprintSync — ISOLATED world content script
- * Runs at document_start. Reads profile + settings from storage and injects
- * the MAIN world script with the profile and settings embedded via DOM.
+ * Runs at document_start. Injects MAIN world script IMMEDIATELY
+ * (before any page JS), then passes profile + settings via DOM.
  * Sites in the blacklist are skipped entirely — no fingerprint spoofing.
  */
 
@@ -18,32 +18,18 @@
   let pageUrl = '';
   try { hostname = location.hostname.toLowerCase(); pageUrl = location.href; } catch (e) {}
 
-  function injectMainScript(profile, settings) {
-    const dataEl = document.createElement('div');
-    dataEl.id = '__fpsync_data';
-    dataEl.style.display = 'none';
-    dataEl.setAttribute('data-profile', encodeURIComponent(JSON.stringify(profile)));
-    dataEl.setAttribute('data-settings', encodeURIComponent(JSON.stringify(settings)));
-    (document.head || document.documentElement).appendChild(dataEl);
-    const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('content-main.js');
-    (document.head || document.documentElement).appendChild(script);
-  }
-
   function isBlacklisted(hostname, url, blacklist) {
     if (!blacklist || !blacklist.length) return false;
     for (const entry of blacklist) {
       const raw = entry.trim();
       if (!raw) continue;
-      // Regex: lines wrapped in /.../ are treated as regex patterns
       if (raw.startsWith('/') && raw.endsWith('/') && raw.length > 2) {
         try {
           const re = new RegExp(raw.slice(1, -1), 'i');
           if (re.test(hostname) || re.test(url)) return true;
-        } catch (e) { /* skip invalid regex */ }
+        } catch (e) {}
         continue;
       }
-      // Domain match
       const domain = raw.toLowerCase();
       if (!hostname) continue;
       if (hostname === domain) return true;
@@ -53,7 +39,15 @@
     return false;
   }
 
-  // Try to get profile, settings and blacklist from storage
+  // STEP 1: Inject MAIN world script IMMEDIATELY at document_start.
+  // This runs BEFORE any page JS, so our prototype hooks are installed first.
+  // The script will wait for the __fpsync_data element via MutationObserver.
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('content-main.js');
+  (document.head || document.documentElement).appendChild(script);
+
+  // STEP 2: Async read storage and pass data via DOM element.
+  // The MAIN world script picks this up via MutationObserver.
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get([
       'fpsync_profile', 'fpsync_enabled', 'fpsync_blacklist',
@@ -61,9 +55,15 @@
       'fpsync_link_cleaner', 'fpsync_link_cleaner_aggressive',
       'fpsync_link_cleaner_custom_params', 'fpsync_link_cleaner_custom_prefixes',
     ], (result) => {
-      if (!result.fpsync_enabled) return;
-      // Blacklist check — skip all spoofing on listed domains
-      if (isBlacklisted(hostname, pageUrl, result.fpsync_blacklist)) return;
+      // If disabled or blacklisted, signal "no profile" so hooks pass through
+      if (!result.fpsync_enabled || isBlacklisted(hostname, pageUrl, result.fpsync_blacklist)) {
+        const signal = document.createElement('div');
+        signal.id = '__fpsync_data';
+        signal.style.display = 'none';
+        signal.setAttribute('data-skip', '1');
+        (document.head || document.documentElement).appendChild(signal);
+        return;
+      }
       if (result.fpsync_profile) {
         try {
           const profile = typeof result.fpsync_profile === 'string'
@@ -80,7 +80,12 @@
               customPrefixes: result.fpsync_link_cleaner_custom_prefixes || '',
             },
           };
-          injectMainScript(profile, settings);
+          const dataEl = document.createElement('div');
+          dataEl.id = '__fpsync_data';
+          dataEl.style.display = 'none';
+          dataEl.setAttribute('data-profile', encodeURIComponent(JSON.stringify(profile)));
+          dataEl.setAttribute('data-settings', encodeURIComponent(JSON.stringify(settings)));
+          (document.head || document.documentElement).appendChild(dataEl);
         } catch (e) {
           console.warn('[FingerprintSync] Failed to parse profile', e);
         }
