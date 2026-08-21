@@ -2,13 +2,12 @@
   "manifest_version": 3,
   "name": "FingerprintSync",
   "description": "Synchronized fingerprint spoofing + WebRTC leak protection + Local Network blocking + Protocol scheme protection + Link Cleaner + Regex URL blocker — all in one.",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "author": "FingerprintSync",
   "permissions": [
     "storage",
     "alarms",
     "declarativeNetRequest",
-    "scripting",
     "tabs"
   ],
   "host_permissions": [
@@ -18,6 +17,12 @@
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": ["<all_urls>"],
       "js": ["content-isolated.js"],
