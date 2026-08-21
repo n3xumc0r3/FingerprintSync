@@ -18,29 +18,24 @@
   document.documentElement.dataset[MARKER] = '1';
   setTimeout(() => delete document.documentElement.dataset[MARKER], 2000);
 
-  // ─── 1. Load profile from injected script data attribute ───
-  // The ISOLATED world content script sets this before us
-  const profileScript = document.currentScript;
+  // ─── 1. Load profile from DOM element set by ISOLATED world ───
+  // No inline scripts — CSP-safe. Data passed via hidden div attributes.
   let profile = null;
-
-  // Try to read from data attribute (set by isolated-world content.js)
-  if (profileScript && profileScript.dataset && profileScript.dataset.profile) {
-    try {
-      profile = JSON.parse(decodeURIComponent(profileScript.dataset.profile));
-    } catch (e) {
-      console.warn('[FingerprintSync] Failed to parse profile from data attribute');
-    }
-  }
-
-  // Fallback: try reading from a global that the isolated script may have set
-  if (!profile && window.__FINGERPRINT_SYNC_PROFILE) {
-    profile = window.__FINGERPRINT_SYNC_PROFILE;
-  }
-
-  // Load protection toggle settings
   let fpSettings = { webrtcBlock: true, localNetBlock: true, protocolBlock: true, linkCleaner: { enabled: true, aggressive: false, customParams: '', customPrefixes: '' } };
-  if (window.__FINGERPRINT_SYNC_SETTINGS) {
-    fpSettings = window.__FINGERPRINT_SYNC_SETTINGS;
+  const dataEl = document.getElementById('__fpsync_data');
+  if (dataEl) {
+    try {
+      const raw = dataEl.getAttribute('data-profile');
+      if (raw) profile = JSON.parse(decodeURIComponent(raw));
+    } catch (e) {
+      console.warn('[FingerprintSync] Failed to parse profile from DOM');
+    }
+    try {
+      const rawSettings = dataEl.getAttribute('data-settings');
+      if (rawSettings) fpSettings = JSON.parse(decodeURIComponent(rawSettings));
+    } catch (e) {}
+    // Clean up the data element
+    dataEl.remove();
   }
 
   if (!profile) {

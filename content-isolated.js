@@ -1,7 +1,7 @@
 /**
  * FingerprintSync — ISOLATED world content script
  * Runs at document_start. Reads profile + settings from storage and injects
- * the MAIN world script with the profile and settings embedded.
+ * the MAIN world script with the profile and settings embedded via DOM.
  */
 
 (function FingerprintSyncIsolated() {
@@ -13,11 +13,14 @@
   document.documentElement.dataset[MARKER] = '1';
 
   function injectMainScript(profile, settings) {
-    const payload = { profile, settings };
-    const loader = document.createElement('script');
-    loader.textContent = `window.__FINGERPRINT_SYNC_PROFILE = ${JSON.stringify(profile)};` +
-      `window.__FINGERPRINT_SYNC_SETTINGS = ${JSON.stringify(settings)};`;
-    (document.head || document.documentElement).appendChild(loader);
+    // Pass data via a hidden DOM element — no inline scripts, CSP-safe
+    const dataEl = document.createElement('div');
+    dataEl.id = '__fpsync_data';
+    dataEl.style.display = 'none';
+    dataEl.setAttribute('data-profile', encodeURIComponent(JSON.stringify(profile)));
+    dataEl.setAttribute('data-settings', encodeURIComponent(JSON.stringify(settings)));
+    (document.head || document.documentElement).appendChild(dataEl);
+    // Load MAIN world script (web_accessible_resource)
     const script = document.createElement('script');
     script.src = chrome.runtime.getURL('content-main.js');
     (document.head || document.documentElement).appendChild(script);
