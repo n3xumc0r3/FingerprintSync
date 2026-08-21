@@ -1,12 +1,14 @@
 /**
  * FingerprintSync — MAIN world content script
  * Injected IMMEDIATELY at document_start (before any page JS).
- * Hooks are installed first, profile data arrives async via DOM MutationObserver.
+ * NO hooks are installed until profile data arrives from ISOLATED world.
+ * Blacklisted sites receive data-skip → hooks never installed (zero breakage).
  *
  * Flow:
- *   1. Install all API hooks immediately (pass-through until profile loads)
+ *   1. Save all original API references (no hooks yet)
  *   2. Wait for __fpsync_data DOM element from ISOLATED world
- *   3. Parse profile, initialize PRNG, hooks start returning spoofed values
+ *   3. If data-skip → do nothing (blacklisted site)
+ *   4. If profile → install ALL hooks, apply profile
  */
 
 'use strict';
@@ -23,6 +25,7 @@
   let _prngState = 0;
   let fpSettings = { webrtcBlock: true, localNetBlock: true, protocolBlock: true, linkCleaner: { enabled: true, aggressive: false, customParams: '', customPrefixes: '' } };
   let _ready = false;
+  let _hooksInstalled = false;
 
   function prngNext() {
     let t = (_prngState += 0x6d2b79f5);
@@ -34,23 +37,7 @@
     return min + Math.floor(prngNext() * (max - min + 1));
   }
 
-  // ─── Helper: define property safely on prototype chain ───
-  function defineProp(obj, prop, value, opts = {}) {
-    try {
-      const descriptor = {
-        configurable: opts.configurable !== undefined ? opts.configurable : false,
-        enumerable: opts.enumerable !== undefined ? opts.enumerable : true,
-        get: typeof value === 'function' && !opts.valueIsGetter === undefined
-          ? value
-          : undefined,
-        value: typeof value !== 'function' || opts.valueIsGetter ? value : undefined,
-        writable: opts.writable !== undefined ? opts.writable : false,
-      };
-      if (descriptor.get) delete descriptor.value;
-      Object.defineProperty(obj, prop, descriptor);
-    } catch (e) {}
-  }
-
+  // ─── Helper: define property on prototype chain ───
   function definePropOnChain(proto, prop, getter) {
     let current = proto;
     while (current !== null) {
@@ -71,271 +58,239 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // 2. NAVIGATOR OVERRIDES — installed immediately, use lazy getters
+  // HOOK INSTALLATION — called ONLY after profile arrives
   // ═══════════════════════════════════════════════════════════════
-  // Capture original getters BEFORE overriding to prevent infinite recursion
-  const _origNav = {};
-  const _navProps = ['userAgent','appVersion','platform','vendor','language','languages','hardwareConcurrency','deviceMemory','userAgentData','doNotTrack'];
-  for (const p of _navProps) {
-    let cur = Navigator.prototype;
-    while (cur) {
-      try {
-        const d = Object.getOwnPropertyDescriptor(cur, p);
-        if (d) { _origNav[p] = d.get || d.value; break; }
-      } catch(e) {}
-      cur = Object.getPrototypeOf(cur);
-    }
-  }
+  function installAllHooks() {
+    if (_hooksInstalled) return;
+    _hooksInstalled = true;
 
-  // Helper: call original getter or return original value
-  function origNavVal(prop) {
-    const v = _origNav[prop];
-    return typeof v === 'function' ? v.call(navigator) : v;
-  }
-
-  definePropOnChain(Navigator.prototype, 'userAgent', () => profile ? profile.ua : origNavVal('userAgent'));
-  definePropOnChain(Navigator.prototype, 'appVersion', () => profile ? profile.appVersion : origNavVal('appVersion'));
-  definePropOnChain(Navigator.prototype, 'platform', () => profile ? profile.platform : origNavVal('platform'));
-  definePropOnChain(Navigator.prototype, 'vendor', () => profile ? profile.vendor : origNavVal('vendor'));
-  definePropOnChain(Navigator.prototype, 'language', () => profile ? profile.language : origNavVal('language'));
-  definePropOnChain(Navigator.prototype, 'languages', () => profile ? Object.freeze([...profile.languages]) : origNavVal('languages'));
-  definePropOnChain(Navigator.prototype, 'hardwareConcurrency', () => profile ? profile.hardwareConcurrency : origNavVal('hardwareConcurrency'));
-  definePropOnChain(Navigator.prototype, 'deviceMemory', () => profile ? profile.deviceMemory : origNavVal('deviceMemory'));
-  if (typeof _origNav.doNotTrack !== 'undefined') {
-    definePropOnChain(Navigator.prototype, 'doNotTrack', () => profile && profile.dnt !== undefined ? profile.dnt : origNavVal('doNotTrack'));
-  }
-  if (typeof _origNav.userAgentData !== 'undefined') {
-    definePropOnChain(Navigator.prototype, 'userAgentData', () => profile ? profile.userAgentData : origNavVal('userAgentData'));
-  }
-
-  // Navigator.plugins — empty (modern Chrome)
-  definePropOnChain(Navigator.prototype, 'plugins', () => {
-    const arr = Object.create(PluginArray.prototype);
-    Object.defineProperty(arr, 'length', { value: 0, writable: false });
-    return arr;
-  });
-  definePropOnChain(Navigator.prototype, 'mimeTypes', () => {
-    const arr = Object.create(MimeTypeArray.prototype);
-    Object.defineProperty(arr, 'length', { value: 0, writable: false });
-    return arr;
-  });
-
-  // ═══════════════════════════════════════════════════════════════
-  // 3. SCREEN OVERRIDES — installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  // Capture original screen values BEFORE overriding
-  const _origScreen = {};
-  const _scrProps = ['width','height','availWidth','availHeight','colorDepth','pixelDepth'];
-  for (const p of _scrProps) {
-    _origScreen[p] = screen[p];
-  }
-
-  definePropOnChain(Screen.prototype, 'width', () => profile ? profile.screen.width : _origScreen.width);
-  definePropOnChain(Screen.prototype, 'height', () => profile ? profile.screen.height : _origScreen.height);
-  definePropOnChain(Screen.prototype, 'availWidth', () => profile ? profile.screen.availWidth : _origScreen.availWidth);
-  definePropOnChain(Screen.prototype, 'availHeight', () => profile ? profile.screen.availHeight : _origScreen.availHeight);
-  definePropOnChain(Screen.prototype, 'colorDepth', () => profile ? profile.screen.colorDepth : _origScreen.colorDepth);
-  definePropOnChain(Screen.prototype, 'pixelDepth', () => profile ? profile.screen.colorDepth : _origScreen.pixelDepth);
-
-  // ═══════════════════════════════════════════════════════════════
-  // 4. CANVAS FINGERPRINT — hooks installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-  const origToBlob = HTMLCanvasElement.prototype.toBlob;
-  const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-
-  function applyCanvasNoise(ctx, canvas) {
-    if (!profile) return;
-    const w = canvas.width;
-    const h = canvas.height;
-    if (w === 0 || h === 0) return;
-    const imgData = origGetImageData.call(ctx, 0, 0, w, h);
-    const data = imgData.data;
-    const len = data.length;
-    const threshold = 0.03 + prngNext() * 0.02;
-    for (let i = 0; i < len; i += 4) {
-      if (prngNext() < threshold) {
-        const offset = prngNext() > 0.5 ? 1 : -1;
-        data[i] = Math.max(0, Math.min(255, data[i] + offset));
-        if (prngNext() < 0.3) data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + offset));
-        if (prngNext() < 0.2) data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + offset));
+    // ─── Capture originals BEFORE overriding ───
+    const _origNav = {};
+    const _navProps = ['userAgent','appVersion','platform','vendor','language','languages','hardwareConcurrency','deviceMemory','userAgentData','doNotTrack'];
+    for (const p of _navProps) {
+      let cur = Navigator.prototype;
+      while (cur) {
+        try {
+          const d = Object.getOwnPropertyDescriptor(cur, p);
+          if (d) { _origNav[p] = d.get || d.value; break; }
+        } catch(e) {}
+        cur = Object.getPrototypeOf(cur);
       }
     }
-    ctx.putImageData(imgData, 0, 0);
-  }
-
-  function getOffscreenCopy(canvas) {
-    const off = document.createElement('canvas');
-    off.width = canvas.width; off.height = canvas.height;
-    const octx = off.getContext('2d');
-    if (octx) octx.drawImage(canvas, 0, 0);
-    return { canvas: off, ctx: octx };
-  }
-
-  HTMLCanvasElement.prototype.toDataURL = function(...args) {
-    if (!profile) return origToDataURL.apply(this, args);
-    const ctx = this.getContext('2d');
-    if (ctx) {
-      const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
-      if (offCtx) applyCanvasNoise(offCtx, off);
-      return origToDataURL.apply(off, args);
+    function origNavVal(prop) {
+      const v = _origNav[prop];
+      return typeof v === 'function' ? v.call(navigator) : v;
     }
-    return origToDataURL.apply(this, args);
-  };
 
-  HTMLCanvasElement.prototype.toBlob = function(callback, ...args) {
-    if (!profile) return origToBlob.apply(this, [callback, ...args]);
-    const ctx = this.getContext('2d');
-    if (ctx) {
-      const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
-      if (offCtx) applyCanvasNoise(offCtx, off);
-      return origToBlob.apply(off, [callback, ...args]);
+    // ── 2. NAVIGATOR OVERRIDES ──
+    definePropOnChain(Navigator.prototype, 'userAgent', () => profile.ua);
+    definePropOnChain(Navigator.prototype, 'appVersion', () => profile.appVersion);
+    definePropOnChain(Navigator.prototype, 'platform', () => profile.platform);
+    definePropOnChain(Navigator.prototype, 'vendor', () => profile.vendor);
+    definePropOnChain(Navigator.prototype, 'language', () => profile.language);
+    definePropOnChain(Navigator.prototype, 'languages', () => Object.freeze([...profile.languages]));
+    definePropOnChain(Navigator.prototype, 'hardwareConcurrency', () => profile.hardwareConcurrency);
+    definePropOnChain(Navigator.prototype, 'deviceMemory', () => profile.deviceMemory);
+    if (typeof _origNav.doNotTrack !== 'undefined') {
+      definePropOnChain(Navigator.prototype, 'doNotTrack', () => profile.dnt !== undefined ? profile.dnt : origNavVal('doNotTrack'));
     }
-    return origToBlob.apply(this, [callback, ...args]);
-  };
+    if (typeof _origNav.userAgentData !== 'undefined') {
+      definePropOnChain(Navigator.prototype, 'userAgentData', () => profile.userAgentData);
+    }
+    // Plugins/mimeTypes — empty (modern Chrome)
+    definePropOnChain(Navigator.prototype, 'plugins', () => {
+      const arr = Object.create(PluginArray.prototype);
+      Object.defineProperty(arr, 'length', { value: 0, writable: false });
+      return arr;
+    });
+    definePropOnChain(Navigator.prototype, 'mimeTypes', () => {
+      const arr = Object.create(MimeTypeArray.prototype);
+      Object.defineProperty(arr, 'length', { value: 0, writable: false });
+      return arr;
+    });
 
-  CanvasRenderingContext2D.prototype.getImageData = function(...args) {
-    const imgData = origGetImageData.apply(this, args);
-    if (!profile) return imgData;
-    const data = imgData.data;
-    const len = data.length;
-    const threshold = 0.03 + prngNext() * 0.02;
-    for (let i = 0; i < len; i += 4) {
-      if (prngNext() < threshold) {
-        const offset = prngNext() > 0.5 ? 1 : -1;
-        data[i] = Math.max(0, Math.min(255, data[i] + offset));
+    // ── 3. SCREEN OVERRIDES ──
+    definePropOnChain(Screen.prototype, 'width', () => profile.screen.width);
+    definePropOnChain(Screen.prototype, 'height', () => profile.screen.height);
+    definePropOnChain(Screen.prototype, 'availWidth', () => profile.screen.availWidth);
+    definePropOnChain(Screen.prototype, 'availHeight', () => profile.screen.availHeight);
+    definePropOnChain(Screen.prototype, 'colorDepth', () => profile.screen.colorDepth);
+    definePropOnChain(Screen.prototype, 'pixelDepth', () => profile.screen.colorDepth);
+
+    // ── 4. CANVAS FINGERPRINT ──
+    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    const origToBlob = HTMLCanvasElement.prototype.toBlob;
+    const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    const origGetContext = HTMLCanvasElement.prototype.getContext;
+
+    function applyCanvasNoise(ctx, canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (w === 0 || h === 0) return;
+      const imgData = origGetImageData.call(ctx, 0, 0, w, h);
+      const data = imgData.data;
+      const len = data.length;
+      const threshold = 0.03 + prngNext() * 0.02;
+      for (let i = 0; i < len; i += 4) {
+        if (prngNext() < threshold) {
+          const offset = prngNext() > 0.5 ? 1 : -1;
+          data[i] = Math.max(0, Math.min(255, data[i] + offset));
+          if (prngNext() < 0.3) data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + offset));
+          if (prngNext() < 0.2) data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + offset));
+        }
       }
+      ctx.putImageData(imgData, 0, 0);
     }
-    return imgData;
-  };
 
-  // ═══════════════════════════════════════════════════════════════
-  // 5. WEBGL FINGERPRINT — hooks installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  function hookWebGLGetParameter(gpu) {
-    return function(pname) {
-      if (!profile) return this.__origGetParam.call(this, pname);
-      switch (pname) {
-        case 0x1F01: return gpu.renderer;
-        case 0x1F00: return gpu.vendor;
-        case 0x9245: return gpu.unmaskedVendor || gpu.vendor;
-        case 0x9246: return gpu.unmaskedRenderer || gpu.renderer;
-        case 0x0D33: return gpu.maxTextureSize;
-        case 0x0D3A: return gpu.maxRenderBufferSize;
-        case 0x0D32: return gpu.maxCubeMapSize;
-        case 0x0D50: return new Float32Array(gpu.pointSizeRange);
-        case 0x0D3A: return new Int32Array(gpu.maxViewportDims);
-        default: return this.__origGetParam.call(this, pname);
+    function getOffscreenCopy(canvas) {
+      const off = document.createElement('canvas');
+      off.width = canvas.width; off.height = canvas.height;
+      const octx = off.getContext('2d');
+      if (octx) octx.drawImage(canvas, 0, 0);
+      return { canvas: off, ctx: octx };
+    }
+
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {
+      const ctx = this.getContext('2d');
+      if (ctx) {
+        const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
+        if (offCtx) applyCanvasNoise(offCtx, off);
+        return origToDataURL.apply(off, args);
       }
+      return origToDataURL.apply(this, args);
     };
-  }
 
-  function hookGetExtension(gpu) {
-    return function(name) {
-      const ext = this.__origGetExt.call(this, name);
-      if (!ext) return ext;
-      if (name === 'WEBGL_debug_renderer_info') {
-        return { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
+    HTMLCanvasElement.prototype.toBlob = function(callback, ...args) {
+      const ctx = this.getContext('2d');
+      if (ctx) {
+        const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
+        if (offCtx) applyCanvasNoise(offCtx, off);
+        return origToBlob.apply(off, [callback, ...args]);
       }
-      return ext;
+      return origToBlob.apply(this, [callback, ...args]);
     };
-  }
 
-  const origGetContext = HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.getContext = function(type, ...args) {
-    const ctx = origGetContext.call(this, type, ...args);
-    if (!ctx) return ctx;
-    if (!profile) return ctx;
-    if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') {
-      const gpu = profile.gpu;
-      const origGetParam = ctx.getParameter.bind(ctx);
-      ctx.__origGetParam = origGetParam;
-      ctx.getParameter = hookWebGLGetParameter(gpu);
-      const origGetExt = ctx.getExtension.bind(ctx);
-      ctx.__origGetExt = origGetExt;
-      ctx.getExtension = hookGetExtension(gpu);
-      ctx.getSupportedExtensions = () => gpu.extensions;
-      origGetExt('WEBGL_debug_renderer_info');
-    }
-    return ctx;
-  };
-
-  // ═══════════════════════════════════════════════════════════════
-  // 6. AUDIO FINGERPRINT — hook installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  const origGetChannelData = AudioBuffer.prototype.getChannelData;
-  AudioBuffer.prototype.getChannelData = function(channel) {
-    const data = origGetChannelData.call(this, channel);
-    if (!profile) return data;
-    for (let i = 0; i < data.length; i += 100) {
-      data[i] += (prngNext() - 0.5) * 0.0001;
-    }
-    return data;
-  };
-
-  // ═══════════════════════════════════════════════════════════════
-  // 7. FONT FINGERPRINT — hook installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  if (document.fonts && document.fonts.check) {
-    const origCheck = document.fonts.check.bind(document.fonts);
-    document.fonts.check = function(font, text) {
-      if (!profile) return origCheck(font, text);
-      const name = (font.match(/"?([^","]+)"?/) || [])[1];
-      if (name && profile.fonts && !profile.fonts.includes(name)) return false;
-      return origCheck(font, text);
-    };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // 8. CLIENTRECTS NOISE — hook installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  const origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
-  Element.prototype.getBoundingClientRect = function() {
-    const rect = origGetBoundingClientRect.call(this);
-    if (!profile) return rect;
-    const noise = (prngNext() - 0.5) * 0.5;
-    return new DOMRect(rect.x + noise, rect.y + noise, rect.width, rect.height);
-  };
-
-  // ═══════════════════════════════════════════════════════════════
-  // 9. WEBGPU — hook installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  if (navigator.gpu) {
-    const origRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
-    navigator.gpu.requestAdapter = async function(...args) {
-      if (args[0] && typeof args[0] === 'object' && 'powerPreference' in args[0]) {
-        const { powerPreference, ...rest } = args[0];
-        args[0] = rest;
+    CanvasRenderingContext2D.prototype.getImageData = function(...args) {
+      const imgData = origGetImageData.apply(this, args);
+      const data = imgData.data;
+      const len = data.length;
+      const threshold = 0.03 + prngNext() * 0.02;
+      for (let i = 0; i < len; i += 4) {
+        if (prngNext() < threshold) {
+          const offset = prngNext() > 0.5 ? 1 : -1;
+          data[i] = Math.max(0, Math.min(255, data[i] + offset));
+        }
       }
-      const adapter = await origRequestAdapter(...args);
-      if (!profile || !adapter) return adapter;
-      const webgpu = profile.webgpu;
-      const gpu = profile.gpu;
-      return new Proxy(adapter, {
-        get(target, prop) {
-          if (prop === 'info') {
-            return {
-              vendor: webgpu.vendor,
-              architecture: webgpu.architecture,
-              device: webgpu.device,
-              description: webgpu.description,
-              features: new Set(webgpu.features || []),
-              limits: { maxTextureDimension1D: gpu.maxTextureSize, maxTextureDimension2D: gpu.maxTextureSize, maxTextureArrayLayers: 256, maxBindGroups: 4 },
-            };
-          }
-          const val = target[prop];
-          if (typeof val === 'function') return val.bind(target);
-          return val;
-        },
-      });
+      return imgData;
     };
-  }
 
-  // ═══════════════════════════════════════════════════════════════
-  // 10. TIMEZONE — deferred to when profile is ready
-  // ═══════════════════════════════════════════════════════════════
-  function applyTimezone() {
-    if (!profile) return;
+    // ── 5. WEBGL FINGERPRINT ──
+    function hookWebGLGetParameter(gpu) {
+      return function(pname) {
+        switch (pname) {
+          case 0x1F01: return gpu.renderer;
+          case 0x1F00: return gpu.vendor;
+          case 0x9245: return gpu.unmaskedVendor || gpu.vendor;
+          case 0x9246: return gpu.unmaskedRenderer || gpu.renderer;
+          case 0x0D33: return gpu.maxTextureSize;
+          case 0x0D3A: return gpu.maxRenderBufferSize;
+          case 0x0D32: return gpu.maxCubeMapSize;
+          case 0x0D50: return new Float32Array(gpu.pointSizeRange);
+          case 0x0D3A: return new Int32Array(gpu.maxViewportDims);
+          default: return this.__origGetParam.call(this, pname);
+        }
+      };
+    }
+
+    function hookGetExtension(gpu) {
+      return function(name) {
+        const ext = this.__origGetExt.call(this, name);
+        if (!ext) return ext;
+        if (name === 'WEBGL_debug_renderer_info') {
+          return { UNMASKED_VENDOR_WEBGL: 0x9245, UNMASKED_RENDERER_WEBGL: 0x9246 };
+        }
+        return ext;
+      };
+    }
+
+    HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+      const ctx = origGetContext.call(this, type, ...args);
+      if (!ctx) return ctx;
+      if (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl') {
+        const gpu = profile.gpu;
+        const origGetParam = ctx.getParameter.bind(ctx);
+        ctx.__origGetParam = origGetParam;
+        ctx.getParameter = hookWebGLGetParameter(gpu);
+        const origGetExt = ctx.getExtension.bind(ctx);
+        ctx.__origGetExt = origGetExt;
+        ctx.getExtension = hookGetExtension(gpu);
+        ctx.getSupportedExtensions = () => gpu.extensions;
+        origGetExt('WEBGL_debug_renderer_info');
+      }
+      return ctx;
+    };
+
+    // ── 6. AUDIO FINGERPRINT ──
+    const origGetChannelData = AudioBuffer.prototype.getChannelData;
+    AudioBuffer.prototype.getChannelData = function(channel) {
+      const data = origGetChannelData.call(this, channel);
+      for (let i = 0; i < data.length; i += 100) {
+        data[i] += (prngNext() - 0.5) * 0.0001;
+      }
+      return data;
+    };
+
+    // ── 7. FONT FINGERPRINT ──
+    if (document.fonts && document.fonts.check) {
+      const origCheck = document.fonts.check.bind(document.fonts);
+      document.fonts.check = function(font, text) {
+        const name = (font.match(/"?([^",]+)"?/) || [])[1];
+        if (name && profile.fonts && !profile.fonts.includes(name)) return false;
+        return origCheck(font, text);
+      };
+    }
+
+    // ── 8. CLIENTRECTS NOISE ──
+    const origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function() {
+      const rect = origGetBoundingClientRect.call(this);
+      const noise = (prngNext() - 0.5) * 0.5;
+      return new DOMRect(rect.x + noise, rect.y + noise, rect.width, rect.height);
+    };
+
+    // ── 9. WEBGPU ──
+    if (navigator.gpu) {
+      const origRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+      navigator.gpu.requestAdapter = async function(...args) {
+        if (args[0] && typeof args[0] === 'object' && 'powerPreference' in args[0]) {
+          const { powerPreference, ...rest } = args[0];
+          args[0] = rest;
+        }
+        const adapter = await origRequestAdapter(...args);
+        if (!adapter) return adapter;
+        const webgpu = profile.webgpu;
+        const gpu = profile.gpu;
+        return new Proxy(adapter, {
+          get(target, prop) {
+            if (prop === 'info') {
+              return {
+                vendor: webgpu.vendor,
+                architecture: webgpu.architecture,
+                device: webgpu.device,
+                description: webgpu.description,
+                features: new Set(webgpu.features || []),
+                limits: { maxTextureDimension1D: gpu.maxTextureSize, maxTextureDimension2D: gpu.maxTextureSize, maxTextureArrayLayers: 256, maxBindGroups: 4 },
+              };
+            }
+            const val = target[prop];
+            if (typeof val === 'function') return val.bind(target);
+            return val;
+          },
+        });
+      };
+    }
+
+    // ── 10. TIMEZONE ──
     try {
       const origDateTimeFormat = Intl.DateTimeFormat;
       Intl.DateTimeFormat = function(...args) {
@@ -357,13 +312,8 @@
         },
       });
     } catch (e) {}
-  }
 
-  // ═══════════════════════════════════════════════════════════════
-  // 11. GEOLOCATION — deferred
-  // ═════════════════════════════════════════════════════════════
-  function applyGeolocation() {
-    if (!profile) return;
+    // ── 11. GEOLOCATION ──
     const TZ_COORDS = {
       'America/New_York': { lat: 40.7128, lng: -74.006 }, 'America/Chicago': { lat: 41.8781, lng: -87.6298 },
       'America/Denver': { lat: 39.7392, lng: -104.9903 }, 'America/Los_Angeles': { lat: 34.0522, lng: -118.2437 },
@@ -381,181 +331,174 @@
     const origWP = navigator.geolocation.watchPosition.bind(navigator.geolocation);
     navigator.geolocation.getCurrentPosition = function(s, e, o) { if (s) setTimeout(() => s(makePos()), 50 + prngInt(0, 100)); };
     navigator.geolocation.watchPosition = function(s, e, o) { if (s) { const id = setInterval(() => s(makePos()), 5000); return prngInt(1, 99999); } return prngInt(1, 99999); };
-  }
 
-  // ═══════════════════════════════════════════════════════════════
-  // 12. MATCH MEDIA / PREFERENCES
-  // ═════════════════════════════════════════════════════════════
-  const origMatchMedia = window.matchMedia;
-  window.matchMedia = function(q) {
-    const r = origMatchMedia.call(this, q);
-    if (!profile) return r;
-    if (q === '(prefers-color-scheme: dark)') return { ...r, matches: prngNext() < 0.45 };
-    if (q === '(prefers-reduced-motion: reduce)') return { ...r, matches: false };
-    return r;
-  };
-
-  // ═══════════════════════════════════════════════════════════════
-  // 13. GLOBAL PRIVACY CONTROL
-  // ═══════════════════════════════════════════════════════════════
-  function applyGPC() {
-    if (!profile || !profile.gpc) return;
-    try { Object.defineProperty(navigator, 'globalPrivacyControl', { configurable: true, enumerable: true, get: () => true }); } catch (e) {}
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // 14. PERFORMANCE TIMING LEAK REDUCTION
-  // ═══════════════════════════════════════════════════════════════
-  try {
-    const origNow = performance.now.bind(performance);
-    const PRECISION = 0.1;
-    Object.defineProperty(performance, 'now', { configurable: true, value: function() { return Math.floor(origNow() / PRECISION) * PRECISION; } });
-  } catch (e) {}
-
-  // ═══════════════════════════════════════════════════
-  // 15. WEBRTC IP LEAK PROTECTION — hook installed immediately
-  // ═══════════════════════════════════════════════════════════════
-  if (window.RTCPeerConnection) {
-    const OrigRTC = window.RTCPeerConnection;
-    const BLOCKED_EVENTS = new Set(['icecandidate','icegatheringstatechange','iceconnectionstatechange','icecandidateerror']);
-
-    function neuterRTC(instance) {
-      if (!fpSettings.webrtcBlock) return instance;
-      const origCreateOffer = instance.createOffer.bind(instance);
-      instance.createOffer = async function(o) { const offer = await origCreateOffer(o || {}); if (offer.sdp) offer.sdp = offer.sdp.replace(/a=candidate:.+\r?\n/g, ''); return offer; };
-      const origSetLocalDesc = instance.setLocalDescription.bind(instance);
-      instance.setLocalDescription = async function(d) { if (d && d.sdp) d.sdp = d.sdp.replace(/a=candidate:.+\r?\n/g, ''); return origSetLocalDesc(d); };
-      Object.defineProperty(instance, 'onicecandidate', { configurable: true, get() { return null; }, set() {} });
-      Object.defineProperty(instance, 'iceGatheringState', { configurable: true, get: () => 'new' });
-      // Block addEventListener for ICE-related events
-      const origAddEventListener = instance.addEventListener.bind(instance);
-      instance.addEventListener = function(type, listener, ...args) {
-        if (BLOCKED_EVENTS.has(type)) return;
-        return origAddEventListener(type, listener, ...args);
-      };
-      const origRemoveEventListener = instance.removeEventListener.bind(instance);
-      instance.removeEventListener = function(type, listener, ...args) {
-        if (BLOCKED_EVENTS.has(type)) return;
-        return origRemoveEventListener(type, listener, ...args);
-      };
-      try {
-        const origLD = Object.getOwnPropertyDescriptor(OrigRTC.prototype, 'localDescription');
-        if (origLD && origLD.get) {
-          Object.defineProperty(instance, 'localDescription', { configurable: true, get: () => { const d = origLD.get.call(instance); if (d && d.sdp) return { type: d.type, sdp: d.sdp.replace(/a=candidate:.+\r?\n/g, '') }; return d; } });
-        }
-      } catch (e) {}
-      const origGetStats = instance.getStats.bind(instance);
-      instance.getStats = async function() { const s = await origGetStats(); if (s instanceof Map) { const c = new Map(); for (const [k, v] of s) { if (v && (v.type === 'local-candidate' || (v.type === 'candidate-pair' && v.localCandidateId))) continue; c.set(k, v); } return c; } return s; };
-      return instance;
-    }
-
-    window.RTCPeerConnection = function(config, constraints) {
-      // Strip ALL ICE/STUN/TURN servers to prevent any IP discovery
-      const safeConfig = { ...(config || {}), iceServers: [] };
-      const instance = new OrigRTC(safeConfig, constraints);
-      return neuterRTC(instance);
+    // ── 12. MATCH MEDIA / PREFERENCES ──
+    const origMatchMedia = window.matchMedia;
+    window.matchMedia = function(q) {
+      const r = origMatchMedia.call(this, q);
+      if (q === '(prefers-color-scheme: dark)') {
+        // Return a proper MediaQueryList with all methods intact
+        const mql = Object.create(MediaQueryList.prototype);
+        Object.defineProperty(mql, 'matches', { value: prngNext() < 0.45, writable: false, configurable: true });
+        Object.defineProperty(mql, 'media', { value: r.media, writable: false, configurable: true });
+        // Delegate all methods to original
+        mql.addEventListener = r.addEventListener.bind(r);
+        mql.removeEventListener = r.removeEventListener.bind(r);
+        mql.addListener = r.addListener ? r.addListener.bind(r) : undefined;
+        mql.removeListener = r.removeListener ? r.removeListener.bind(r) : undefined;
+        mql.dispatchEvent = r.dispatchEvent.bind(r);
+        mql.onchange = null;
+        return mql;
+      }
+      if (q === '(prefers-reduced-motion: reduce)') {
+        const mql = Object.create(MediaQueryList.prototype);
+        Object.defineProperty(mql, 'matches', { value: false, writable: false, configurable: true });
+        Object.defineProperty(mql, 'media', { value: r.media, writable: false, configurable: true });
+        mql.addEventListener = r.addEventListener.bind(r);
+        mql.removeEventListener = r.removeEventListener.bind(r);
+        mql.addListener = r.addListener ? r.addListener.bind(r) : undefined;
+        mql.removeListener = r.removeListener ? r.removeListener.bind(r) : undefined;
+        mql.dispatchEvent = r.dispatchEvent.bind(r);
+        return mql;
+      }
+      return r;
     };
-    window.RTCPeerConnection.prototype = OrigRTC.prototype;
-    // Preserve static methods
-    try { window.RTCPeerConnection.generateCertificate = OrigRTC.generateCertificate; } catch(e) {}
-    if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = window.RTCPeerConnection;
-  }
 
-  // ═══════════════════════════════════════════════════════════════
-  // 16. CUSTOM PROTOCOL SCHEME PROTECTION
-  // ═══════════════════════════════════════════════════════════════
-  const BLOCKED_PROTOCOLS = new Set([
-    'slack','zoom','teams','skype','discord','spotify','telegram','whatsapp','viber',
-    'outlook','steam','epicgames','riotclient','magnet','torrent','thunder',
-    'vscode','cursor','intellij','xcode','figma','notion','obsidian',
-    '1password','bitwarden','keepassxc','deezer','tidal','zoommtg','msteams',
-    'sip','sips','facetime','chrome-extension','moz-extension','brave',
-  ]);
-  const ALLOWED_PROTOCOLS = new Set(['http','https','about','javascript','data','blob','ftp','file']);
-  const isCustomProtocol = (url) => { try { const m = String(url).match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); return m && !ALLOWED_PROTOCOLS.has(m[1].toLowerCase()); } catch { return false; } };
-  const origWindowOpen = window.open;
-  window.open = function(url, target, features) {
-    if (typeof url === 'string' && isCustomProtocol(url)) { const m = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); if (m && BLOCKED_PROTOCOLS.has(m[1].toLowerCase())) return null; }
-    return origWindowOpen.call(this, url, target, features);
-  };
+    // ── 13. GLOBAL PRIVACY CONTROL ──
+    if (profile.gpc) {
+      try { Object.defineProperty(navigator, 'globalPrivacyControl', { configurable: true, enumerable: true, get: () => true }); } catch (e) {}
+    }
 
-  // ═══════════════════════════════════════════════════════════════
-  // 17. LOCAL NETWORK PROBING PROTECTION
-  // ═══════════════════════════════════════════════════════════════
-  const isLocalIP = (url) => {
+    // ── 14. PERFORMANCE TIMING LEAK REDUCTION ──
     try {
-      const h = new URL(url).hostname;
-      if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '0.0.0.0' || h === '[::1]') return true;
-      if (/^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h) || /^169\.254\./.test(h)) return true;
-      if (h.endsWith('.local') || h.endsWith('.internal')) return true;
+      const origNow = performance.now.bind(performance);
+      const PRECISION = 0.1;
+      Object.defineProperty(performance, 'now', { configurable: true, value: function() { return Math.floor(origNow() / PRECISION) * PRECISION; } });
     } catch (e) {}
-    return false;
-  };
-  const origFetch = window.fetch;
-  window.fetch = function(input, init) { const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input)); if (fpSettings.localNetBlock && isLocalIP(url)) return Promise.reject(new TypeError('Failed to fetch')); return origFetch.call(this, input, init); };
-  const origXHROpen = XMLHttpRequest.prototype.open;
-  const origXHRSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function(m, url, ...r) { if (typeof url === 'string' && fpSettings.localNetBlock && isLocalIP(url)) this._fpsync_blocked = true; return origXHROpen.call(this, m, url, ...r); };
-  XMLHttpRequest.prototype.send = function(body) { if (this._fpsync_blocked) { const x = this; setTimeout(() => { try { Object.defineProperty(x, 'readyState', { value: 4, writable: false }); Object.defineProperty(x, 'status', { value: 0, writable: false }); if (x.onerror) x.onerror(new Event('error')); } catch (e) {} }, 5 + Math.floor(Math.random() * 20)); return; } return origXHRSend.call(this, body); };
 
-  // ═══════════════════════════════════════════════════════════════
-  // 18. LINK CLEANER
-  // ═════════════════════════════════════════════════════════════
-  const TRACKING_PARAMS = new Set([
-    'utm_source','utm_medium','utm_campaign','utm_term','utm_content','utm_id',
-    '_ga','_gl','_gid','gclsrc','gclid','gad_source','gbraid','wbraid',
-    'fbclid','msclkid','twclid','li_fat_id','mc_eid','mc_cid','_openstat','yclid','ysclid',
-    'from','igshid','si','feature','ref_code','affiliate_id','click_id','clickid','mkt_tok',
-  ]);
-  const CUSTOM_PREFIXES = [];
-  function matchesTrackingParam(key) {
-    const lk = key.toLowerCase();
-    if (TRACKING_PARAMS.has(key) || TRACKING_PARAMS.has(lk)) return true;
-    for (const p of CUSTOM_PREFIXES) { if (lk.startsWith(p)) return true; }
-    return false;
-  }
-  function cleanUrlParams(url) {
-    try {
-      const p = new URL(url, location.origin);
-      for (const k of [...p.searchParams.keys()]) { if (matchesTrackingParam(k)) p.searchParams.delete(k); }
-      let c = p.toString(); if (c.endsWith('?')) c = c.slice(0, -1); return c;
-    } catch (e) { return url; }
-  }
-  function initLinkCleaner() {
-    if (!fpSettings.linkCleaner || !fpSettings.linkCleaner.enabled) return;
-    if (fpSettings.linkCleaner.aggressive) {
-      ['ref','referrer','source','campaign','ad_id','session','tracking_id','visitor_id','token','debug','log','version','build','tab','panel','section','card','searchlog'].forEach(p => TRACKING_PARAMS.add(p));
-      ['utm_','cm_','pk_','ef_','hj_','hs_','mkto_','_ga','_gl','_hs','mc_','mkt_'].forEach(p => CUSTOM_PREFIXES.push(p));
+    // ── 15. WEBRTC IP LEAK PROTECTION ──
+    if (window.RTCPeerConnection) {
+      const OrigRTC = window.RTCPeerConnection;
+      const BLOCKED_EVENTS = new Set(['icecandidate','icegatheringstatechange','iceconnectionstatechange','icecandidateerror']);
+
+      function neuterRTC(instance) {
+        if (!fpSettings.webrtcBlock) return instance;
+        const origCreateOffer = instance.createOffer.bind(instance);
+        instance.createOffer = async function(o) { const offer = await origCreateOffer(o || {}); if (offer.sdp) offer.sdp = offer.sdp.replace(/a=candidate:.+\r?\n/g, ''); return offer; };
+        const origSetLocalDesc = instance.setLocalDescription.bind(instance);
+        instance.setLocalDescription = async function(d) { if (d && d.sdp) d.sdp = d.sdp.replace(/a=candidate:.+\r?\n/g, ''); return origSetLocalDesc(d); };
+        Object.defineProperty(instance, 'onicecandidate', { configurable: true, get() { return null; }, set() {} });
+        Object.defineProperty(instance, 'iceGatheringState', { configurable: true, get: () => 'new' });
+        const origAddEventListener = instance.addEventListener.bind(instance);
+        instance.addEventListener = function(type, listener, ...args) {
+          if (BLOCKED_EVENTS.has(type)) return;
+          return origAddEventListener(type, listener, ...args);
+        };
+        const origRemoveEventListener = instance.removeEventListener.bind(instance);
+        instance.removeEventListener = function(type, listener, ...args) {
+          if (BLOCKED_EVENTS.has(type)) return;
+          return origRemoveEventListener(type, listener, ...args);
+        };
+        try {
+          const origLD = Object.getOwnPropertyDescriptor(OrigRTC.prototype, 'localDescription');
+          if (origLD && origLD.get) {
+            Object.defineProperty(instance, 'localDescription', { configurable: true, get: () => { const d = origLD.get.call(instance); if (d && d.sdp) return { type: d.type, sdp: d.sdp.replace(/a=candidate:.+\r?\n/g, '') }; return d; } });
+          }
+        } catch (e) {}
+        const origGetStats = instance.getStats.bind(instance);
+        instance.getStats = async function() { const s = await origGetStats(); if (s instanceof Map) { const c = new Map(); for (const [k, v] of s) { if (v && (v.type === 'local-candidate' || (v.type === 'candidate-pair' && v.localCandidateId))) continue; c.set(k, v); } return c; } return s; };
+        return instance;
+      }
+
+      window.RTCPeerConnection = function(config, constraints) {
+        const safeConfig = { ...(config || {}), iceServers: [] };
+        const instance = new OrigRTC(safeConfig, constraints);
+        return neuterRTC(instance);
+      };
+      window.RTCPeerConnection.prototype = OrigRTC.prototype;
+      try { window.RTCPeerConnection.generateCertificate = OrigRTC.generateCertificate; } catch(e) {}
+      if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = window.RTCPeerConnection;
     }
-    if (fpSettings.linkCleaner.customParams) fpSettings.linkCleaner.customParams.split('\n').forEach(p => { if (p.trim()) TRACKING_PARAMS.add(p.trim()); });
-    if (fpSettings.linkCleaner.customPrefixes) fpSettings.linkCleaner.customPrefixes.split('\n').forEach(p => { if (p.trim()) CUSTOM_PREFIXES.push(p.trim().toLowerCase()); });
 
-    function doClean() {
-      try { const url = location.href; if (!url.includes('?')) return; const c = cleanUrlParams(url); if (c !== url) history.replaceState(null, '', c); } catch (e) {}
+    // ── 16. CUSTOM PROTOCOL SCHEME PROTECTION ──
+    const BLOCKED_PROTOCOLS = new Set([
+      'slack','zoom','teams','skype','discord','spotify','telegram','whatsapp','viber',
+      'outlook','steam','epicgames','riotclient','magnet','torrent','thunder',
+      'vscode','cursor','intellij','xcode','figma','notion','obsidian',
+      '1password','bitwarden','keepassxc','deezer','tidal','zoommtg','msteams',
+      'sip','sips','facetime','chrome-extension','moz-extension','brave',
+    ]);
+    const ALLOWED_PROTOCOLS = new Set(['http','https','about','javascript','data','blob','ftp','file']);
+    const isCustomProtocol = (url) => { try { const m = String(url).match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); return m && !ALLOWED_PROTOCOLS.has(m[1].toLowerCase()); } catch { return false; } };
+    const origWindowOpen = window.open;
+    window.open = function(url, target, features) {
+      if (typeof url === 'string' && isCustomProtocol(url)) { const m = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); if (m && BLOCKED_PROTOCOLS.has(m[1].toLowerCase())) return null; }
+      return origWindowOpen.call(this, url, target, features);
+    };
+
+    // ── 17. LOCAL NETWORK PROBING PROTECTION ──
+    const isLocalIP = (url) => {
+      try {
+        const h = new URL(url).hostname;
+        if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '0.0.0.0' || h === '[::1]') return true;
+        if (/^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h) || /^169\.254\./.test(h)) return true;
+        if (h.endsWith('.local') || h.endsWith('.internal')) return true;
+      } catch (e) {}
+      return false;
+    };
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) { const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input)); if (fpSettings.localNetBlock && isLocalIP(url)) return Promise.reject(new TypeError('Failed to fetch')); return origFetch.call(this, input, init); };
+    const origXHROpen = XMLHttpRequest.prototype.open;
+    const origXHRSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(m, url, ...r) { if (typeof url === 'string' && fpSettings.localNetBlock && isLocalIP(url)) this._fpsync_blocked = true; return origXHROpen.call(this, m, url, ...r); };
+    XMLHttpRequest.prototype.send = function(body) { if (this._fpsync_blocked) { const x = this; setTimeout(() => { try { Object.defineProperty(x, 'readyState', { value: 4, writable: false }); Object.defineProperty(x, 'status', { value: 0, writable: false }); if (x.onerror) x.onerror(new Event('error')); } catch (e) {} }, 5 + Math.floor(Math.random() * 20)); return; } return origXHRSend.call(this, body); };
+
+    // ── 18. LINK CLEANER ──
+    const TRACKING_PARAMS = new Set([
+      'utm_source','utm_medium','utm_campaign','utm_term','utm_content','utm_id',
+      '_ga','_gl','_gid','gclsrc','gclid','gad_source','gbraid','wbraid',
+      'fbclid','msclkid','twclid','li_fat_id','mc_eid','mc_cid','_openstat','yclid','ysclid',
+      'from','igshid','si','feature','ref_code','affiliate_id','click_id','clickid','mkt_tok',
+    ]);
+    const CUSTOM_PREFIXES = [];
+    function matchesTrackingParam(key) {
+      const lk = key.toLowerCase();
+      if (TRACKING_PARAMS.has(key) || TRACKING_PARAMS.has(lk)) return true;
+      for (const p of CUSTOM_PREFIXES) { if (lk.startsWith(p)) return true; }
+      return false;
     }
-    if (document.readyState === 'complete') doClean(); else window.addEventListener('load', doClean);
-    const origPS = history.pushState;
-    const origRS = history.replaceState;
-    history.pushState = function(s, t, u) { if (typeof u === 'string' && u.includes('?')) u = cleanUrlParams(u); return origPS.call(this, s, t, u); };
-    history.replaceState = function(s, t, u) { if (typeof u === 'string' && u.includes('?')) u = cleanUrlParams(u); return origRS.call(this, s, t, u); };
-    document.addEventListener('click', function(e) {
-      const a = e.target.closest('a');
-      if (a && a.href) { try { const c = cleanUrlParams(a.href); if (c !== a.href) a.href = c; } catch (ex) {} }
-    }, true);
-  }
+    function cleanUrlParams(url) {
+      try {
+        const p = new URL(url, location.origin);
+        for (const k of [...p.searchParams.keys()]) { if (matchesTrackingParam(k)) p.searchParams.delete(k); }
+        let c = p.toString(); if (c.endsWith('?')) c = c.slice(0, -1); return c;
+      } catch (e) { return url; }
+    }
+    function initLinkCleaner() {
+      if (!fpSettings.linkCleaner || !fpSettings.linkCleaner.enabled) return;
+      if (fpSettings.linkCleaner.aggressive) {
+        ['ref','referrer','source','campaign','ad_id','session','tracking_id','visitor_id','token','debug','log','version','build','tab','panel','section','card','searchlog'].forEach(p => TRACKING_PARAMS.add(p));
+        ['utm_','cm_','pk_','ef_','hj_','hs_','mkto_','_ga','_gl','_hs','mc_','mkt_'].forEach(p => CUSTOM_PREFIXES.push(p));
+      }
+      if (fpSettings.linkCleaner.customParams) fpSettings.linkCleaner.customParams.split('\n').forEach(p => { if (p.trim()) TRACKING_PARAMS.add(p.trim()); });
+      if (fpSettings.linkCleaner.customPrefixes) fpSettings.linkCleaner.customPrefixes.split('\n').forEach(p => { if (p.trim()) CUSTOM_PREFIXES.push(p.trim().toLowerCase()); });
 
-  // ═══════════════════════════════════════════════════════════════
-  // 19. PROFILE LOADER — MutationObserver waits for __fpsync_data
-  // ═══════════════════════════════════════════════════════════════
-  function onProfileReady() {
-    if (_ready) return;
-    _ready = true;
-    // Apply deferred overrides that need profile data
-    applyTimezone();
-    applyGeolocation();
-    applyGPC();
+      function doClean() {
+        try { const url = location.href; if (!url.includes('?')) return; const c = cleanUrlParams(url); if (c !== url) history.replaceState(null, '', c); } catch (e) {}
+      }
+      if (document.readyState === 'complete') doClean(); else window.addEventListener('load', doClean);
+      const origPS = history.pushState;
+      const origRS = history.replaceState;
+      history.pushState = function(s, t, u) { if (typeof u === 'string' && u.includes('?')) u = cleanUrlParams(u); return origPS.call(this, s, t, u); };
+      history.replaceState = function(s, t, u) { if (typeof u === 'string' && u.includes('?')) u = cleanUrlParams(u); return origRS.call(this, s, t, u); };
+      document.addEventListener('click', function(e) {
+        const a = e.target.closest('a');
+        if (a && a.href) { try { const c = cleanUrlParams(a.href); if (c !== a.href) a.href = c; } catch (ex) {} }
+      }, true);
+    }
     initLinkCleaner();
-    // Protocol blocker needs fpSettings
+
+    // ── 19. PROTOCOL BLOCKER (iframe mutation observer) ──
     if (fpSettings.protocolBlock) {
       new MutationObserver((mutations) => {
         for (const m of mutations) { for (const n of m.addedNodes) { if (n.nodeName === 'IFRAME') try { if (typeof n.src === 'string' && isCustomProtocol(n.src)) { const match = n.src.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); if (match && BLOCKED_PROTOCOLS.has(match[1].toLowerCase())) n.src = 'about:blank'; } } catch (e) {} } }
@@ -565,10 +508,20 @@
     }
   }
 
-  // Check if data element already exists (rare but possible)
+  // ═══════════════════════════════════════════════════════════════
+  // PROFILE LOADER — MutationObserver waits for __fpsync_data
+  // ═══════════════════════════════════════════════════════════════
+  function onProfileReady() {
+    if (_ready) return;
+    _ready = true;
+    // Install ALL hooks now that we have the profile
+    installAllHooks();
+  }
+
+  // Check if data element already exists
   const existingEl = document.getElementById('__fpsync_data');
   if (existingEl) {
-    if (existingEl.getAttribute('data-skip') === '1') return; // Disabled/blacklisted
+    if (existingEl.getAttribute('data-skip') === '1') return;
     try {
       const raw = existingEl.getAttribute('data-profile');
       if (raw) profile = JSON.parse(decodeURIComponent(raw));
@@ -580,12 +533,11 @@
     existingEl.remove();
     if (profile) { _prngState = profile.seed | 0; onProfileReady(); }
   } else {
-    // Wait for data element via MutationObserver
     const observer = new MutationObserver((mutations, obs) => {
       const el = document.getElementById('__fpsync_data');
       if (!el) return;
       obs.disconnect();
-      if (el.getAttribute('data-skip') === '1') return; // Disabled/blacklisted
+      if (el.getAttribute('data-skip') === '1') return;
       try {
         const raw = el.getAttribute('data-profile');
         if (raw) profile = JSON.parse(decodeURIComponent(raw));
@@ -598,7 +550,6 @@
       if (profile) { _prngState = profile.seed | 0; onProfileReady(); }
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    // Safety timeout — if profile never arrives, hooks stay in pass-through mode
     setTimeout(() => observer.disconnect(), 3000);
   }
 

@@ -1,8 +1,9 @@
 /**
  * FingerprintSync — ISOLATED world content script
- * Runs at document_start. Reads storage FIRST, then injects
- * MAIN world script ONLY for non-blacklisted sites.
- * Blacklisted sites get ZERO injection — no hooks, no breakage.
+ * Runs at document_start. Injects MAIN world script IMMEDIATELY
+ * (before any page JS). The MAIN script waits for profile data
+ * via MutationObserver before installing any hooks.
+ * Blacklisted sites receive data-skip signal → no hooks installed.
  */
 
 (function FingerprintSyncIsolated() {
@@ -21,10 +22,7 @@
   // Heuristic: detect bare regex (contains regex metacharacters not typical in domains)
   const REGEX_CHARS = /[.*+?^${}()|\[\]]/;
   function looksLikeRegex(s) {
-    // Must contain at least one regex metachar
     if (!REGEX_CHARS.test(s)) return false;
-    // Pure domain-like strings with dots only are NOT regex
-    // e.g. "example.com" or ".example.com" — dots alone don't count
     const stripped = s.replace(/\./g, '');
     return REGEX_CHARS.test(stripped);
   }
@@ -63,7 +61,13 @@
     return false;
   }
 
-  // Read storage FIRST, then decide whether to inject content-main.js
+  // STEP 1: Inject MAIN world script IMMEDIATELY at document_start.
+  // The script will NOT install any hooks until it receives profile data.
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('content-main.js');
+  (document.head || document.documentElement).appendChild(script);
+
+  // STEP 2: Async read storage and pass data via DOM element.
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get([
       'fpsync_profile', 'fpsync_enabled', 'fpsync_blacklist',
@@ -71,17 +75,15 @@
       'fpsync_link_cleaner', 'fpsync_link_cleaner_aggressive',
       'fpsync_link_cleaner_custom_params', 'fpsync_link_cleaner_custom_prefixes',
     ], (result) => {
-      // If disabled or blacklisted — do NOT inject content-main.js at all
+      // If disabled or blacklisted, signal "no hooks" so the MAIN script stays clean
       if (!result.fpsync_enabled || isBlacklisted(hostname, pageUrl, result.fpsync_blacklist)) {
+        const signal = document.createElement('div');
+        signal.id = '__fpsync_data';
+        signal.style.display = 'none';
+        signal.setAttribute('data-skip', '1');
+        (document.head || document.documentElement).appendChild(signal);
         return;
       }
-
-      // Not blacklisted — inject MAIN world script now
-      const script = document.createElement('script');
-      script.src = chrome.runtime.getURL('content-main.js');
-      (document.head || document.documentElement).appendChild(script);
-
-      // Pass profile + settings via DOM element
       if (result.fpsync_profile) {
         try {
           const profile = typeof result.fpsync_profile === 'string'
