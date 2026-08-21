@@ -1,8 +1,12 @@
 /**
  * FingerprintSync — ISOLATED world content script
- * Runs at document_start. Injects MAIN world script as INLINE script
- * (synchronous, no network fetch needed) so it runs BEFORE any page JS.
- * Blacklisted sites receive data-skip signal → no profile hooks installed.
+ * Runs at document_start. Profile delivery only.
+ *
+ * content-main.js is now registered via chrome.scripting.registerContentScripts
+ * in the background service worker (runs in MAIN world at document_start, bypasses CSP).
+ *
+ * This script's ONLY job: read storage and pass profile data to MAIN world
+ * via a hidden DOM element that content-main.js watches for via MutationObserver.
  */
 
 (function FingerprintSyncIsolated() {
@@ -58,26 +62,6 @@
       if (!domain.startsWith('.') && hostname.endsWith('.' + domain)) return true;
     }
     return false;
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // INJECT content-main.js as INLINE script (SYNCHRONOUS — no network)
-  // Using synchronous XMLHttpRequest to fetch the script content,
-  // then inject it as an inline <script> tag. This runs immediately
-  // without waiting for a network round-trip to the extension URL.
-  // ═══════════════════════════════════════════════════════════════
-  try {
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', chrome.runtime.getURL('content-main.js'), false); // false = synchronous
-    xhr.send();
-    if (xhr.status === 200) {
-      const inlineScript = document.createElement('script');
-      inlineScript.textContent = xhr.responseText;
-      (document.head || document.documentElement).appendChild(inlineScript);
-      inlineScript.remove(); // Clean up
-    }
-  } catch (e) {
-    console.warn('[FingerprintSync] Failed to inject MAIN script:', e);
   }
 
   // ═══════════════════════════════════════════════════════════════

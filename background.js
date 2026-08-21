@@ -588,7 +588,40 @@ chrome.runtime.onStartup.addListener(async () => {
   await setupAlarm();
 });
 
+// ═══════════════════════════════════════════════════════════════
+// MAIN WORLD SCRIPT REGISTRATION
+// Register content-main.js to run in MAIN world at document_start.
+// This uses chrome.scripting.registerContentScripts which bypasses CSP
+// and injects before any page JS, unlike <script src=...> which is
+// subject to both CSP and network latency.
+// ═══════════════════════════════════════════════════════════════
+async function registerMainWorldScript() {
+  try {
+    await chrome.scripting.registerContentScripts([{
+      id: 'fpsync-main-world',
+      js: ['content-main.js'],
+      matches: ['<all_urls>'],
+      runAt: 'document_start',
+      world: 'MAIN',
+    }]);
+  } catch (e) {
+    // Already registered (e.g., service worker restart) — update it
+    try {
+      await chrome.scripting.updateContentScripts([{
+        id: 'fpsync-main-world',
+        js: ['content-main.js'],
+        matches: ['<all_urls>'],
+        runAt: 'document_start',
+        world: 'MAIN',
+      }]);
+    } catch (e2) {
+      console.warn('[FingerprintSync] Failed to register MAIN world script:', e2.message);
+    }
+  }
+}
+
 (async () => {
+  await registerMainWorldScript();
   const data = await chrome.storage.local.get([STORAGE_KEYS.ENABLED, STORAGE_KEYS.AUTO_SYNC]);
   if (data[STORAGE_KEYS.ENABLED] !== false) {
     await generateAndStoreProfile();
