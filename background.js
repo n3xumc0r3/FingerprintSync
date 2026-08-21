@@ -604,8 +604,9 @@ async function registerMainWorldScript() {
       runAt: 'document_start',
       world: 'MAIN',
     }]);
+    console.log('[FingerprintSync] MAIN world script registered');
   } catch (e) {
-    // Already registered (e.g., service worker restart) — update it
+    console.warn('[FingerprintSync] registerContentScripts failed:', e.message, '— trying update');
     try {
       await chrome.scripting.updateContentScripts([{
         id: 'fpsync-main-world',
@@ -614,6 +615,7 @@ async function registerMainWorldScript() {
         runAt: 'document_start',
         world: 'MAIN',
       }]);
+      console.log('[FingerprintSync] MAIN world script updated');
     } catch (e2) {
       console.warn('[FingerprintSync] Failed to register MAIN world script:', e2.message);
     }

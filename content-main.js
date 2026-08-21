@@ -141,7 +141,7 @@
     return imgData;
   };
 
-  // Phase 1 canvas hooks now active — installed before any page JS
+  console.log('[FPSync] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
 
   // ═══════════════════════════════════════════════════════════════
   // PHASE 2 — Profile-dependent hooks (installed AFTER profile arrives)
@@ -539,10 +539,8 @@
   function onProfileReady() {
     if (_ready) return;
     _ready = true;
-    // Re-seed PRNG with profile seed for deterministic noise
     _prngState = profile.seed | 0;
-    
-    // Install profile-dependent hooks (Navigator, Screen, WebGL, etc.)
+    console.log('[FPSync] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms');
     installProfileHooks();
   }
 
