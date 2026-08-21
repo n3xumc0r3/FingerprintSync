@@ -520,6 +520,11 @@
   if (navigator.gpu) {
     const origRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
     navigator.gpu.requestAdapter = async function(...args) {
+      // Strip powerPreference to suppress Chrome warning on Windows (crbug.com/369219127)
+      if (args[0] && typeof args[0] === 'object' && 'powerPreference' in args[0]) {
+        const { powerPreference, ...rest } = args[0];
+        args[0] = rest;
+      }
       const adapter = await origRequestAdapter(...args);
       if (!adapter) {
         // If no real adapter, create a fake one
