@@ -1,12 +1,10 @@
 /**
  * FingerprintSync — ISOLATED world content script
- * Runs at document_start. Profile delivery only.
+ * Runs at document_start (manifest-declared, guaranteed).
  *
- * content-main.js is now registered via chrome.scripting.registerContentScripts
- * in the background service worker (runs in MAIN world at document_start, bypasses CSP).
- *
- * This script's ONLY job: read storage and pass profile data to MAIN world
- * via a hidden DOM element that content-main.js watches for via MutationObserver.
+ * Job 1: Request background to inject content-main.js into MAIN world
+ *         via chrome.scripting.executeScript (bypasses CSP, runs immediately).
+ * Job 2: Read storage and pass profile data via DOM element.
  */
 
 (function FingerprintSyncIsolated() {
@@ -17,12 +15,23 @@
   if (document.documentElement.dataset[MARKER]) return;
   document.documentElement.dataset[MARKER] = '1';
 
-  // Extract hostname and full URL for blacklist check
+  // ─── JOB 1: Request MAIN world injection from background ───
+  // This is the most reliable MV3 method for MAIN world injection.
+  // chrome.scripting.executeScript bypasses CSP and with injectImmediately
+  // runs before any page JS.
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+    chrome.runtime.sendMessage({ type: 'inject_main' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.warn('[FPSync] MAIN injection failed:', chrome.runtime.lastError.message);
+      }
+    });
+  }
+
+  // ─── JOB 2: Profile delivery ───
   let hostname = '';
   let pageUrl = '';
   try { hostname = location.hostname.toLowerCase(); pageUrl = location.href; } catch (e) {}
 
-  // Heuristic: detect bare regex (contains regex metacharacters not typical in domains)
   const REGEX_CHARS = /[.*+?^${}()|\[\]]/;
   function looksLikeRegex(s) {
     if (!REGEX_CHARS.test(s)) return false;
@@ -35,18 +44,14 @@
     for (const entry of blacklist) {
       const raw = entry.trim();
       if (!raw) continue;
-      // Format 1: /pattern/ or /pattern/flags
       if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
         try {
-          const lastSlash = raw.lastIndexOf('/');
-          const pattern = raw.slice(1, lastSlash);
-          const flags = raw.slice(lastSlash + 1);
-          const re = new RegExp(pattern, flags.includes('i') ? flags : flags + 'i');
+          const ls = raw.lastIndexOf('/');
+          const re = new RegExp(raw.slice(1, ls), raw.slice(ls + 1).includes('i') ? raw.slice(ls + 1) : raw.slice(ls + 1) + 'i');
           if (re.test(hostname) || re.test(url)) return true;
         } catch (e) {}
         continue;
       }
-      // Format 2: bare regex like .*google\..*
       if (looksLikeRegex(raw)) {
         try {
           const re = new RegExp(raw, 'i');
@@ -54,7 +59,6 @@
         } catch (e) {}
         continue;
       }
-      // Format 3: plain domain (exact or subdomain)
       const domain = raw.toLowerCase();
       if (!hostname) continue;
       if (hostname === domain) return true;
@@ -64,9 +68,6 @@
     return false;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // Async read storage and pass data via DOM element.
-  // ═══════════════════════════════════════════════════════════════
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get([
       'fpsync_profile', 'fpsync_enabled', 'fpsync_blacklist',
@@ -74,7 +75,6 @@
       'fpsync_link_cleaner', 'fpsync_link_cleaner_aggressive',
       'fpsync_link_cleaner_custom_params', 'fpsync_link_cleaner_custom_prefixes',
     ], (result) => {
-      // If disabled or blacklisted, signal "no hooks" so the MAIN script stays clean
       if (!result.fpsync_enabled || isBlacklisted(hostname, pageUrl, result.fpsync_blacklist)) {
         const signal = document.createElement('div');
         signal.id = '__fpsync_data';

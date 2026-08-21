@@ -108,7 +108,7 @@ async function generateAndStoreProfile() {
   const engine = new ProfileEngine(seed);
   const profile = engine.getProfile();
   await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE]: JSON.stringify(profile) });
-  await applyAllDNRRules(profile.ua);
+  await applyAllDNRRulesLocked(profile.ua);
   return profile;
 }
 
@@ -310,7 +310,30 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // ═══════════════════════════════════════════════════════════════
 // MESSAGE HANDLING
 // ═══════════════════════════════════════════════════════════════
+// DNR update lock to prevent concurrent rule conflicts
+let _dnrLock = Promise.resolve();
+function applyAllDNRRulesLocked(uaString) {
+  _dnrLock = _dnrLock.catch(() => {}).then(() => applyAllDNRRules(uaString));
+  return _dnrLock;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // --- MAIN world injection request from content-isolated.js ---
+  if (message.type === 'inject_main') {
+    if (!sender.tab || !sender.tab.id) {
+      sendResponse({ success: false, error: 'No tab context' });
+      return false;
+    }
+    chrome.scripting.executeScript({
+      target: { tabId: sender.tab.id },
+      files: ['content-main.js'],
+      world: 'MAIN',
+      injectImmediately: true,
+    }).then(() => sendResponse({ success: true }))
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
   // --- Fingerprint profile ---
   if (message.type === 'get_profile') {
     chrome.storage.local.get(STORAGE_KEYS.PROFILE, (data) => {
@@ -407,7 +430,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const profileData = await chrome.storage.local.get(STORAGE_KEYS.PROFILE);
       let ua = '';
       try { ua = JSON.parse(profileData[STORAGE_KEYS.PROFILE]).ua; } catch (e) {}
-      if (ua) await applyAllDNRRules(ua);
+      if (ua) await applyAllDNRRulesLocked(ua);
       sendResponse({ success: true });
     })();
     return true;
@@ -451,7 +474,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const profileData = await chrome.storage.local.get(STORAGE_KEYS.PROFILE);
       let ua = '';
       try { ua = JSON.parse(profileData[STORAGE_KEYS.PROFILE]).ua; } catch (e) {}
-      if (ua) await applyAllDNRRules(ua);
+      if (ua) await applyAllDNRRulesLocked(ua);
       sendResponse({ success: true });
     })();
     return true;
@@ -484,7 +507,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         profile.timezone = ipData.timezone;
         profile.geo = { lat: ipData.lat, lon: ipData.lon, city: ipData.city, country: ipData.country, ip: ipData.query };
         await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE]: JSON.stringify(profile) });
-        await applyAllDNRRules(profile.ua);
+        await applyAllDNRRulesLocked(profile.ua);
         // Notify all tabs
         const tabs = await chrome.tabs.query({});
         for (const tab of tabs) { try { await chrome.tabs.sendMessage(tab.id, { type: 'profile_updated' }); } catch (e) {} }
@@ -502,7 +525,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const profileData = await chrome.storage.local.get(STORAGE_KEYS.PROFILE);
       let ua = '';
       try { ua = JSON.parse(profileData[STORAGE_KEYS.PROFILE]).ua; } catch (e) {}
-      if (ua) await applyAllDNRRules(ua);
+      if (ua) await applyAllDNRRulesLocked(ua);
       sendResponse({ success: true });
     })();
     return true;
@@ -588,42 +611,7 @@ chrome.runtime.onStartup.addListener(async () => {
   await setupAlarm();
 });
 
-// ═══════════════════════════════════════════════════════════════
-// MAIN WORLD SCRIPT REGISTRATION
-// Register content-main.js to run in MAIN world at document_start.
-// This uses chrome.scripting.registerContentScripts which bypasses CSP
-// and injects before any page JS, unlike <script src=...> which is
-// subject to both CSP and network latency.
-// ═══════════════════════════════════════════════════════════════
-async function registerMainWorldScript() {
-  try {
-    await chrome.scripting.registerContentScripts([{
-      id: 'fpsync-main-world',
-      js: ['content-main.js'],
-      matches: ['<all_urls>'],
-      runAt: 'document_start',
-      world: 'MAIN',
-    }]);
-    console.log('[FingerprintSync] MAIN world script registered');
-  } catch (e) {
-    console.warn('[FingerprintSync] registerContentScripts failed:', e.message, '— trying update');
-    try {
-      await chrome.scripting.updateContentScripts([{
-        id: 'fpsync-main-world',
-        js: ['content-main.js'],
-        matches: ['<all_urls>'],
-        runAt: 'document_start',
-        world: 'MAIN',
-      }]);
-      console.log('[FingerprintSync] MAIN world script updated');
-    } catch (e2) {
-      console.warn('[FingerprintSync] Failed to register MAIN world script:', e2.message);
-    }
-  }
-}
-
 (async () => {
-  await registerMainWorldScript();
   const data = await chrome.storage.local.get([STORAGE_KEYS.ENABLED, STORAGE_KEYS.AUTO_SYNC]);
   if (data[STORAGE_KEYS.ENABLED] !== false) {
     await generateAndStoreProfile();
