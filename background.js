@@ -215,10 +215,23 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     STORAGE_KEYS.LINK_CLEANER_ALWAYS_DOMAINS,
     STORAGE_KEYS.LINK_CLEANER_CUSTOM_PARAMS,
     STORAGE_KEYS.LINK_CLEANER_CUSTOM_PREFIXES,
+    STORAGE_KEYS.BLACKLIST,
   ]);
 
   const enabled = settings[STORAGE_KEYS.LINK_CLEANER_ENABLED] !== false;
   if (!enabled) return;
+
+  // Skip link cleaning on blacklisted domains
+  const blacklist = settings[STORAGE_KEYS.BLACKLIST] || [];
+  if (blacklist.length > 0) {
+    let hostname = '';
+    try { hostname = new URL(tab.url).hostname.toLowerCase(); } catch (e) {}
+    for (const entry of blacklist) {
+      const d = entry.trim().toLowerCase();
+      if (!d) continue;
+      if (hostname === d || hostname.endsWith('.' + d)) { return; }
+    }
+  }
 
   const options = {
     aggressive: settings[STORAGE_KEYS.LINK_CLEANER_AGGRESSIVE] || false,
