@@ -14,7 +14,7 @@
  *     (canvas hooks with temp seed are harmless, just adds random noise)
  */
 
-'use strict';
+console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFixed(1), 'ms');
 
 (function FingerprintSyncMain() {
   // Prevent double-injection
@@ -141,7 +141,7 @@
     return imgData;
   };
 
-  console.log('[FPSync v2.0.2] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
+  console.log('[FPSync v2.0.3] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
 
   // ═══════════════════════════════════════════════════════════════
   // PHASE 2 — Profile-dependent hooks (installed AFTER profile arrives)
