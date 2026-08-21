@@ -154,9 +154,13 @@
       const ctx = this.getContext('2d');
       if (ctx) {
         const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
+        console.log('[FPSync] toDataURL called, canvas', this.width, 'x', this.height, 'prngState=', _prngState, 'seed=', profile?.seed, 'offCtx=', !!offCtx);
         if (offCtx) applyCanvasNoise(offCtx, off);
-        return origToDataURL.apply(off, args);
+        const result = origToDataURL.apply(off, args);
+        console.log('[FPSync] toDataURL result (first 80):', result.substring(0, 80));
+        return result;
       }
+      console.log('[FPSync] toDataURL: no 2d context, using orig');
       return origToDataURL.apply(this, args);
     };
 
@@ -164,6 +168,7 @@
       const ctx = this.getContext('2d');
       if (ctx) {
         const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
+        console.log('[FPSync] toBlob called, prngState=', _prngState);
         if (offCtx) applyCanvasNoise(offCtx, off);
         return origToBlob.apply(off, [callback, ...args]);
       }
@@ -171,16 +176,20 @@
     };
 
     CanvasRenderingContext2D.prototype.getImageData = function(...args) {
+      console.log('[FPSync] getImageData called, prngState=', _prngState);
       const imgData = origGetImageData.apply(this, args);
       const data = imgData.data;
       const len = data.length;
       const threshold = 0.03 + prngNext() * 0.02;
+      let modified = 0;
       for (let i = 0; i < len; i += 4) {
         if (prngNext() < threshold) {
           const offset = prngNext() > 0.5 ? 1 : -1;
           data[i] = Math.max(0, Math.min(255, data[i] + offset));
+          modified++;
         }
       }
+      console.log('[FPSync] getImageData modified', modified, 'of', len / 4, 'pixels, threshold=', threshold);
       return imgData;
     };
 
@@ -514,8 +523,10 @@
   function onProfileReady() {
     if (_ready) return;
     _ready = true;
+    console.log('[FPSync] Profile ready, seed=', profile.seed, 'prngState=', _prngState);
     // Install ALL hooks now that we have the profile
     installAllHooks();
+    console.log('[FPSync] All hooks installed at', performance.now());
   }
 
   // Check if data element already exists
