@@ -73,20 +73,40 @@
   // ═══════════════════════════════════════════════════════════════
   // 2. NAVIGATOR OVERRIDES — installed immediately, use lazy getters
   // ═══════════════════════════════════════════════════════════════
-  definePropOnChain(Navigator.prototype, 'userAgent', () => profile ? profile.ua : Navigator.prototype.__lookupGetter__('userAgent').call(navigator));
-  definePropOnChain(Navigator.prototype, 'appVersion', () => profile ? profile.appVersion : Navigator.prototype.__lookupGetter__('appVersion').call(navigator));
-  definePropOnChain(Navigator.prototype, 'platform', () => profile ? profile.platform : Navigator.prototype.__lookupGetter__('platform').call(navigator));
-  definePropOnChain(Navigator.prototype, 'vendor', () => profile ? profile.vendor : Navigator.prototype.__lookupGetter__('vendor').call(navigator));
-  definePropOnChain(Navigator.prototype, 'language', () => profile ? profile.language : Navigator.prototype.__lookupGetter__('language').call(navigator));
-  definePropOnChain(Navigator.prototype, 'languages', () => profile ? Object.freeze([...profile.languages]) : Navigator.prototype.__lookupGetter__('languages').call(navigator));
-  definePropOnChain(Navigator.prototype, 'hardwareConcurrency', () => profile ? profile.hardwareConcurrency : Navigator.prototype.__lookupGetter__('hardwareConcurrency').call(navigator));
-  definePropOnChain(Navigator.prototype, 'deviceMemory', () => profile ? profile.deviceMemory : Navigator.prototype.__lookupGetter__('deviceMemory').call(navigator));
-  if (typeof Navigator.prototype.__lookupGetter__('doNotTrack') === 'function') {
-    definePropOnChain(Navigator.prototype, 'doNotTrack', () => profile && profile.dnt !== undefined ? profile.dnt : Navigator.prototype.__lookupGetter__('doNotTrack').call(navigator));
+  // Capture original getters BEFORE overriding to prevent infinite recursion
+  const _origNav = {};
+  const _navProps = ['userAgent','appVersion','platform','vendor','language','languages','hardwareConcurrency','deviceMemory','userAgentData','doNotTrack'];
+  for (const p of _navProps) {
+    let cur = Navigator.prototype;
+    while (cur) {
+      try {
+        const d = Object.getOwnPropertyDescriptor(cur, p);
+        if (d) { _origNav[p] = d.get || d.value; break; }
+      } catch(e) {}
+      cur = Object.getPrototypeOf(cur);
+    }
   }
 
-  // User-Agent Client Hints
-  definePropOnChain(Navigator.prototype, 'userAgentData', () => profile ? profile.userAgentData : Navigator.prototype.__lookupGetter__('userAgentData').call(navigator));
+  // Helper: call original getter or return original value
+  function origNavVal(prop) {
+    const v = _origNav[prop];
+    return typeof v === 'function' ? v.call(navigator) : v;
+  }
+
+  definePropOnChain(Navigator.prototype, 'userAgent', () => profile ? profile.ua : origNavVal('userAgent'));
+  definePropOnChain(Navigator.prototype, 'appVersion', () => profile ? profile.appVersion : origNavVal('appVersion'));
+  definePropOnChain(Navigator.prototype, 'platform', () => profile ? profile.platform : origNavVal('platform'));
+  definePropOnChain(Navigator.prototype, 'vendor', () => profile ? profile.vendor : origNavVal('vendor'));
+  definePropOnChain(Navigator.prototype, 'language', () => profile ? profile.language : origNavVal('language'));
+  definePropOnChain(Navigator.prototype, 'languages', () => profile ? Object.freeze([...profile.languages]) : origNavVal('languages'));
+  definePropOnChain(Navigator.prototype, 'hardwareConcurrency', () => profile ? profile.hardwareConcurrency : origNavVal('hardwareConcurrency'));
+  definePropOnChain(Navigator.prototype, 'deviceMemory', () => profile ? profile.deviceMemory : origNavVal('deviceMemory'));
+  if (typeof _origNav.doNotTrack !== 'undefined') {
+    definePropOnChain(Navigator.prototype, 'doNotTrack', () => profile && profile.dnt !== undefined ? profile.dnt : origNavVal('doNotTrack'));
+  }
+  if (typeof _origNav.userAgentData !== 'undefined') {
+    definePropOnChain(Navigator.prototype, 'userAgentData', () => profile ? profile.userAgentData : origNavVal('userAgentData'));
+  }
 
   // Navigator.plugins — empty (modern Chrome)
   definePropOnChain(Navigator.prototype, 'plugins', () => {
@@ -103,12 +123,19 @@
   // ═══════════════════════════════════════════════════════════════
   // 3. SCREEN OVERRIDES — installed immediately
   // ═══════════════════════════════════════════════════════════════
-  definePropOnChain(Screen.prototype, 'width', () => profile ? profile.screen.width : screen.width);
-  definePropOnChain(Screen.prototype, 'height', () => profile ? profile.screen.height : screen.height);
-  definePropOnChain(Screen.prototype, 'availWidth', () => profile ? profile.screen.availWidth : screen.availWidth);
-  definePropOnChain(Screen.prototype, 'availHeight', () => profile ? profile.screen.availHeight : screen.availHeight);
-  definePropOnChain(Screen.prototype, 'colorDepth', () => profile ? profile.screen.colorDepth : screen.colorDepth);
-  definePropOnChain(Screen.prototype, 'pixelDepth', () => profile ? profile.screen.colorDepth : screen.pixelDepth);
+  // Capture original screen values BEFORE overriding
+  const _origScreen = {};
+  const _scrProps = ['width','height','availWidth','availHeight','colorDepth','pixelDepth'];
+  for (const p of _scrProps) {
+    _origScreen[p] = screen[p];
+  }
+
+  definePropOnChain(Screen.prototype, 'width', () => profile ? profile.screen.width : _origScreen.width);
+  definePropOnChain(Screen.prototype, 'height', () => profile ? profile.screen.height : _origScreen.height);
+  definePropOnChain(Screen.prototype, 'availWidth', () => profile ? profile.screen.availWidth : _origScreen.availWidth);
+  definePropOnChain(Screen.prototype, 'availHeight', () => profile ? profile.screen.availHeight : _origScreen.availHeight);
+  definePropOnChain(Screen.prototype, 'colorDepth', () => profile ? profile.screen.colorDepth : _origScreen.colorDepth);
+  definePropOnChain(Screen.prototype, 'pixelDepth', () => profile ? profile.screen.colorDepth : _origScreen.pixelDepth);
 
   // ═══════════════════════════════════════════════════════════════
   // 4. CANVAS FINGERPRINT — hooks installed immediately
@@ -385,15 +412,14 @@
     Object.defineProperty(performance, 'now', { configurable: true, value: function() { return Math.floor(origNow() / PRECISION) * PRECISION; } });
   } catch (e) {}
 
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════
   // 15. WEBRTC IP LEAK PROTECTION — hook installed immediately
   // ═══════════════════════════════════════════════════════════════
   if (window.RTCPeerConnection) {
     const OrigRTC = window.RTCPeerConnection;
-    window.RTCPeerConnection = function(config, constraints) {
-      // Strip ALL ICE/STUN/TURN servers to prevent any IP discovery
-      const safeConfig = { ...(config || {}), iceServers: [] };
-      const instance = new OrigRTC(safeConfig, constraints);
+    const BLOCKED_EVENTS = new Set(['icecandidate','icegatheringstatechange','iceconnectionstatechange','icecandidateerror']);
+
+    function neuterRTC(instance) {
       if (!fpSettings.webrtcBlock) return instance;
       const origCreateOffer = instance.createOffer.bind(instance);
       instance.createOffer = async function(o) { const offer = await origCreateOffer(o || {}); if (offer.sdp) offer.sdp = offer.sdp.replace(/a=candidate:.+\r?\n/g, ''); return offer; };
@@ -401,8 +427,19 @@
       instance.setLocalDescription = async function(d) { if (d && d.sdp) d.sdp = d.sdp.replace(/a=candidate:.+\r?\n/g, ''); return origSetLocalDesc(d); };
       Object.defineProperty(instance, 'onicecandidate', { configurable: true, get() { return null; }, set() {} });
       Object.defineProperty(instance, 'iceGatheringState', { configurable: true, get: () => 'new' });
+      // Block addEventListener for ICE-related events
+      const origAddEventListener = instance.addEventListener.bind(instance);
+      instance.addEventListener = function(type, listener, ...args) {
+        if (BLOCKED_EVENTS.has(type)) return;
+        return origAddEventListener(type, listener, ...args);
+      };
+      const origRemoveEventListener = instance.removeEventListener.bind(instance);
+      instance.removeEventListener = function(type, listener, ...args) {
+        if (BLOCKED_EVENTS.has(type)) return;
+        return origRemoveEventListener(type, listener, ...args);
+      };
       try {
-        const origLD = Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'localDescription');
+        const origLD = Object.getOwnPropertyDescriptor(OrigRTC.prototype, 'localDescription');
         if (origLD && origLD.get) {
           Object.defineProperty(instance, 'localDescription', { configurable: true, get: () => { const d = origLD.get.call(instance); if (d && d.sdp) return { type: d.type, sdp: d.sdp.replace(/a=candidate:.+\r?\n/g, '') }; return d; } });
         }
@@ -410,8 +447,17 @@
       const origGetStats = instance.getStats.bind(instance);
       instance.getStats = async function() { const s = await origGetStats(); if (s instanceof Map) { const c = new Map(); for (const [k, v] of s) { if (v && (v.type === 'local-candidate' || (v.type === 'candidate-pair' && v.localCandidateId))) continue; c.set(k, v); } return c; } return s; };
       return instance;
+    }
+
+    window.RTCPeerConnection = function(config, constraints) {
+      // Strip ALL ICE/STUN/TURN servers to prevent any IP discovery
+      const safeConfig = { ...(config || {}), iceServers: [] };
+      const instance = new OrigRTC(safeConfig, constraints);
+      return neuterRTC(instance);
     };
     window.RTCPeerConnection.prototype = OrigRTC.prototype;
+    // Preserve static methods
+    try { window.RTCPeerConnection.generateCertificate = OrigRTC.generateCertificate; } catch(e) {}
     if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = window.RTCPeerConnection;
   }
 
