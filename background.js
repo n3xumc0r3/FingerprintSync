@@ -43,6 +43,8 @@ const STORAGE_KEYS = {
   WEBRTC_BLOCK: 'fpsync_webrtc_block',
   LOCAL_NET_BLOCK: 'fpsync_local_net_block',
   PROTOCOL_BLOCK: 'fpsync_protocol_block',
+  AUTO_SYNC: 'fpsync_auto_sync',
+  SYNCED_IP: 'fpsync_synced_ip',
 };
 
 const DEFAULT_SESSION_TTL = 12;
@@ -269,6 +271,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'rotate_seed') {
     (async () => {
       try {
+        await forceNewSeed();
         const profile = await generateAndStoreProfile();
         const tabs = await chrome.tabs.query({});
         for (const tab of tabs) { try { await chrome.tabs.sendMessage(tab.id, { type: 'profile_updated' }); } catch (e) {} }
@@ -319,7 +322,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         webrtcBlock: data[STORAGE_KEYS.WEBRTC_BLOCK] !== false,
         localNetBlock: data[STORAGE_KEYS.LOCAL_NET_BLOCK] !== false,
         protocolBlock: data[STORAGE_KEYS.PROTOCOL_BLOCK] !== false,
+        autoSync: data[STORAGE_KEYS.AUTO_SYNC] || false,
+        syncedIP: null,
       });
+      // Attach synced IP data
+      if (data[STORAGE_KEYS.SYNCED_IP]) {
+        try { resp.syncedIP = JSON.parse(data[STORAGE_KEYS.SYNCED_IP]); } catch (e) {}
+      }
     });
     return true;
   }
@@ -399,6 +408,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // --- Sync to IP ---
+  if (message.type === 'sync_to_ip') {
+    (async () => {
+      try {
+        const resp = await fetch('http://ip-api.com/json/?fields=status,query,city,country,countryCode,regionName,lat,lon,timezone');
+        const ipData = await resp.json();
+        if (ipData.status !== 'success') {
+          sendResponse({ success: false, error: 'IP lookup failed: ' + (ipData.message || 'unknown') });
+          return;
+        }
+        // Store synced IP info
+        await chrome.storage.local.set({ [STORAGE_KEYS.SYNCED_IP]: JSON.stringify(ipData) });
+        // Regenerate profile with matched timezone
+        const seed = await getOrCreateSeed();
+        const engine = new ProfileEngine(seed);
+        const profile = engine.getProfile();
+        // Override timezone and geo to match real IP
+        profile.timezone = ipData.timezone;
+        profile.geo = { lat: ipData.lat, lon: ipData.lon, city: ipData.city, country: ipData.country, ip: ipData.query };
+        await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE]: JSON.stringify(profile) });
+        await applyAllDNRRules(profile.ua);
+        // Notify all tabs
+        const tabs = await chrome.tabs.query({});
+        for (const tab of tabs) { try { await chrome.tabs.sendMessage(tab.id, { type: 'profile_updated' }); } catch (e) {} }
+        sendResponse({ success: true, profile, ip: ipData });
+      } catch (e) { sendResponse({ success: false, error: e.message }); }
+    })();
+    return true;
+  }
+
+  // --- Toggle auto-sync ---
+  if (message.type === 'set_auto_sync') {
+    (async () => {
+      await chrome.storage.local.set({ [STORAGE_KEYS.AUTO_SYNC]: message.enabled });
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
+
   // --- Test link cleaner on current URL ---
   if (message.type === 'test_clean_url') {
     (async () => {
@@ -420,6 +468,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// IP SYNC — Fetch real IP and match timezone/geo
+// ═══════════════════════════════════════════════════════════════
+async function syncToIP() {
+  try {
+    const resp = await fetch('http://ip-api.com/json/?fields=status,query,city,country,countryCode,regionName,lat,lon,timezone');
+    const ipData = await resp.json();
+    if (ipData.status !== 'success') return;
+    await chrome.storage.local.set({ [STORAGE_KEYS.SYNCED_IP]: JSON.stringify(ipData) });
+    // Patch existing profile with real timezone + geo
+    const data = await chrome.storage.local.get(STORAGE_KEYS.PROFILE);
+    let profile;
+    try { profile = typeof data[STORAGE_KEYS.PROFILE] === 'string' ? JSON.parse(data[STORAGE_KEYS.PROFILE]) : data[STORAGE_KEYS.PROFILE]; } catch (e) { return; }
+    if (!profile) return;
+    profile.timezone = ipData.timezone;
+    profile.geo = { lat: ipData.lat, lon: ipData.lon, city: ipData.city, country: ipData.country, ip: ipData.query };
+    await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE]: JSON.stringify(profile) });
+  } catch (e) {
+    console.warn('[FingerprintSync] Auto-sync failed:', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // INITIALIZATION
 // ═══════════════════════════════════════════════════════════════
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -434,13 +504,21 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 chrome.runtime.onStartup.addListener(async () => {
   await generateAndStoreProfile();
+  // Auto-sync IP on browser start
+  const data = await chrome.storage.local.get(STORAGE_KEYS.AUTO_SYNC);
+  if (data[STORAGE_KEYS.AUTO_SYNC]) {
+    await syncToIP();
+  }
   await setupAlarm();
 });
 
 (async () => {
-  const data = await chrome.storage.local.get(STORAGE_KEYS.ENABLED);
+  const data = await chrome.storage.local.get([STORAGE_KEYS.ENABLED, STORAGE_KEYS.AUTO_SYNC]);
   if (data[STORAGE_KEYS.ENABLED] !== false) {
     await generateAndStoreProfile();
+    if (data[STORAGE_KEYS.AUTO_SYNC]) {
+      await syncToIP();
+    }
   }
   await setupAlarm();
 })();

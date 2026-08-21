@@ -1,11 +1,37 @@
-/**
- * FingerprintSync v2 — Popup Script
+/*
+ * FingerprintSync v2.1 — Popup Script
  */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
 let currentSettings = null;
 let currentProfile = null;
+
+const TZ_COORDS = {
+  'America/New_York':     { lat: 40.71, lng: -74.01 },
+  'America/Chicago':      { lat: 41.88, lng: -87.63 },
+  'America/Denver':       { lat: 39.74, lng: -104.99 },
+  'America/Los_Angeles':  { lat: 34.05, lng: -118.24 },
+  'America/Anchorage':    { lat: 61.22, lng: -149.90 },
+  'America/Sao_Paulo':    { lat: -23.55, lng: -46.63 },
+  'Europe/London':        { lat: 51.51, lng: -0.13 },
+  'Europe/Paris':         { lat: 48.86, lng: 2.35 },
+  'Europe/Berlin':        { lat: 52.52, lng: 13.41 },
+  'Europe/Madrid':        { lat: 40.42, lng: -3.70 },
+  'Europe/Rome':          { lat: 41.90, lng: 12.50 },
+  'Europe/Amsterdam':     { lat: 52.37, lng: 4.90 },
+  'Europe/Moscow':        { lat: 55.76, lng: 37.62 },
+  'Europe/Istanbul':      { lat: 41.01, lng: 28.98 },
+  'Europe/Warsaw':        { lat: 52.23, lng: 21.01 },
+  'Asia/Dubai':           { lat: 25.20, lng: 55.27 },
+  'Asia/Kolkata':         { lat: 19.08, lng: 72.88 },
+  'Asia/Shanghai':        { lat: 31.23, lng: 121.47 },
+  'Asia/Tokyo':           { lat: 35.68, lng: 139.65 },
+  'Asia/Seoul':           { lat: 37.57, lng: 126.98 },
+  'Asia/Singapore':       { lat: 1.35, lng: 103.82 },
+  'Australia/Sydney':     { lat: -33.87, lng: 151.21 },
+  'Pacific/Auckland':     { lat: -36.85, lng: 174.76 },
+};
 
 document.addEventListener('DOMContentLoaded', async () => {
   setupTabs();
@@ -49,6 +75,7 @@ function updateUI() {
   $('toggleBtn').className = 'toggle-btn' + (enabled ? '' : ' off');
   if (s?.seed) $('seedValue').textContent = '0x' + (s.seed >>> 0).toString(16).padStart(8, '0');
   $('ttlInput').value = s?.sessionTTL || 12;
+
   if (currentProfile) {
     const osNames = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
     $('profileOS').textContent = osNames[currentProfile.os] || currentProfile.os;
@@ -59,11 +86,41 @@ function updateUI() {
     $('profileLang').textContent = currentProfile.language || '—';
     $('profileCPU').textContent = `${currentProfile.hardwareConcurrency} cores / ${currentProfile.deviceMemory}GB`;
     $('profileFonts').textContent = `${currentProfile.fonts?.length || 0} fonts`;
+
+    // Geo section
+    $('geoTZ').textContent = currentProfile.timezone || '—';
+    if (currentProfile.geo) {
+      $('geoCoords').textContent = `${currentProfile.geo.lat.toFixed(4)}, ${currentProfile.geo.lon.toFixed(4)}`;
+      $('geoCoords').classList.add('synced');
+    } else {
+      const tzCoords = TZ_COORDS[currentProfile.timezone] || TZ_COORDS['America/New_York'];
+      $('geoCoords').textContent = `${tzCoords.lat.toFixed(2)}, ${tzCoords.lng.toFixed(2)} (random)`;
+      $('geoCoords').classList.remove('synced');
+    }
   }
+
+  // Synced IP display
+  if (s?.syncedIP) {
+    $('realIP').textContent = s.syncedIP.query || '—';
+    $('realIP').classList.add('synced');
+    $('ipLocation').textContent = (s.syncedIP.city || '') + ', ' + (s.syncedIP.country || '');
+    $('syncStatus').textContent = 'Synced: ' + s.syncedIP.timezone;
+    $('syncStatus').style.display = 'block';
+  } else {
+    $('realIP').textContent = 'not synced';
+    $('realIP').classList.remove('synced');
+    $('ipLocation').textContent = '—';
+    $('syncStatus').style.display = 'none';
+  }
+
+  // Auto-sync checkbox
+  $('autoSyncCheck').checked = s?.autoSync || false;
+
   // Network tab
   $('webrtcToggle').checked = s?.webrtcBlock !== false;
   $('localNetToggle').checked = s?.localNetBlock !== false;
   $('protocolToggle').checked = s?.protocolBlock !== false;
+
   // Link cleaner tab
   const lc = s?.linkCleaner || {};
   $('lcToggle').checked = lc.enabled !== false;
@@ -72,6 +129,7 @@ function updateUI() {
   $('lcCustomPrefixes').value = lc.customPrefixes || '';
   $('lcStatsAll').textContent = lc.stats?.allTime || 0;
   $('lcStatsSession').textContent = lc.stats?.session || 0;
+
   // Regex blocker tab
   $('regexInput').value = (s?.regexRules || []).join('\n');
   updateRegexList(s?.regexRules || []);
@@ -106,6 +164,7 @@ function setupListeners() {
     await sendMessage({ type: 'set_enabled', enabled: newState });
     await loadState(); updateUI();
   });
+
   // Rotate
   $('rotateBtn').addEventListener('click', async () => {
     $('rotateBtn').textContent = 'Rotating...'; $('rotateBtn').disabled = true;
@@ -113,17 +172,44 @@ function setupListeners() {
     if (resp.success) { currentProfile = resp.profile; await loadState(); updateUI(); }
     $('rotateBtn').textContent = 'Rotate Identity'; $('rotateBtn').disabled = false;
   });
+
   // Test
   $('testBtn').addEventListener('click', () => chrome.tabs.create({ url: 'https://browserleaks.com' }));
+
   // TTL
   $('saveTtlBtn').addEventListener('click', async () => {
     const ttl = parseInt($('ttlInput').value, 10);
     if (ttl >= 1 && ttl <= 168) { await sendMessage({ type: 'set_ttl', ttl }); await loadState(); updateUI(); }
   });
+
+  // Sync to IP
+  $('syncBtn').addEventListener('click', async () => {
+    $('syncBtn').textContent = 'Syncing...'; $('syncBtn').disabled = true;
+    const resp = await sendMessage({ type: 'sync_to_ip' });
+    if (resp.success) {
+      currentProfile = resp.profile;
+      await loadState(); updateUI();
+      $('syncStatus').textContent = 'Synced: ' + resp.ip.timezone + ' (' + resp.ip.city + ', ' + resp.ip.country + ')';
+      $('syncStatus').style.display = 'block';
+    } else {
+      $('syncStatus').textContent = 'Failed: ' + (resp.error || 'unknown');
+      $('syncStatus').style.display = 'block';
+      $('syncStatus').style.color = '#f44336';
+      setTimeout(() => { $('syncStatus').style.color = '#4caf50'; }, 3000);
+    }
+    $('syncBtn').textContent = 'Sync to IP'; $('syncBtn').disabled = false;
+  });
+
+  // Auto-sync toggle
+  $('autoSyncCheck').addEventListener('change', async (e) => {
+    await sendMessage({ type: 'set_auto_sync', enabled: e.target.checked });
+  });
+
   // Network toggles
   $('webrtcToggle').addEventListener('change', async (e) => { await sendMessage({ type: 'set_webrtc_block', enabled: e.target.checked }); });
   $('localNetToggle').addEventListener('change', async (e) => { await sendMessage({ type: 'set_local_net_block', enabled: e.target.checked }); });
   $('protocolToggle').addEventListener('change', async (e) => { await sendMessage({ type: 'set_protocol_block', enabled: e.target.checked }); });
+
   // Link cleaner
   $('lcSaveBtn').addEventListener('click', async () => {
     await sendMessage({ type: 'set_link_cleaner', settings: {
@@ -138,6 +224,7 @@ function setupListeners() {
     await sendMessage({ type: 'reset_link_cleaner_stats' });
     $('lcStatsAll').textContent = '0'; $('lcStatsSession').textContent = '0';
   });
+
   // Regex blocker
   $('regexSaveBtn').addEventListener('click', async () => {
     const rules = $('regexInput').value.split('\n').filter(l => l.trim());
