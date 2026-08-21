@@ -120,25 +120,38 @@ async function applyAllDNRRules(uaString) {
   const allRules = [];
   const chromeVer = (uaString.match(/Chrome\/([\d]+)/) || ['','130'])[1];
 
+  // Read blacklist — extract plain domains (not regex) for DNR exclusion
+  const blData = await chrome.storage.local.get(STORAGE_KEYS.BLACKLIST);
+  const rawBlacklist = blData[STORAGE_KEYS.BLACKLIST] || [];
+  const excludedDomains = rawBlacklist
+    .filter(e => !e.trim().startsWith('/') || !e.trim().endsWith('/'))
+    .map(e => e.trim().toLowerCase().replace(/^\./, ''))
+    .filter(Boolean);
+  // Remove eTLD+1 duplicates
+  const domainSet = [...new Set(excludedDomains)];
+  const excludedInitiatorDomains = domainSet.length > 0 ? domainSet : undefined;
+
   // 1. UA spoofing (ID 1)
   allRules.push({
     id: DNR.UA_SPOOF, priority: 1,
     action: { type: 'modifyHeaders', requestHeaders: [{ header: 'User-Agent', operation: 'set', value: uaString }] },
-    condition: { urlFilter: '*://*/*', resourceTypes: ['main_frame','sub_frame','stylesheet','script','image','font','object','xmlhttprequest','ping','csp_report','media','websocket','webtransport','other'] },
+    condition: { urlFilter: '*://*/*', resourceTypes: ['main_frame','sub_frame','stylesheet','script','image','font','object','xmlhttprequest','ping','csp_report','media','websocket','webtransport','other'], ...(excludedInitiatorDomains ? { excludedInitiatorDomains } : {}) },
   });
 
   // 2. Client Hints (ID 2)
+  const platformMatch = uaString.match(/\((Windows|Macintosh|Linux|CrOS|Android|iPhone|iPad)/);
+  const chPlatform = platformMatch ? platformMatch[1] === 'Macintosh' ? '"macOS"' : platformMatch[1] === 'CrOS' ? '"ChromeOS"' : `"${platformMatch[1]}"` : '"Windows"';
   allRules.push({
     id: DNR.CLIENT_HINTS, priority: 1,
     action: {
       type: 'modifyHeaders',
       requestHeaders: [
-        { header: 'Sec-CH-UA', operation: 'set', value: '"Not A(Brand";v="99", "Google Chrome";v="' + chromeVer + '"' },
+        { header: 'Sec-CH-UA', operation: 'set', value: `"Not A(Brand";v="99", "Google Chrome";v="${chromeVer}"` },
         { header: 'Sec-CH-UA-Mobile', operation: 'set', value: '?0' },
-        { header: 'Sec-CH-UA-Platform', operation: 'set', value: '"Windows"' },
+        { header: 'Sec-CH-UA-Platform', operation: 'set', value: chPlatform },
       ],
     },
-    condition: { urlFilter: '*://*/*', resourceTypes: ['main_frame','sub_frame','stylesheet','script','image','font','object','xmlhttprequest','ping','csp_report','media','websocket','webtransport','other'] },
+    condition: { urlFilter: '*://*/*', resourceTypes: ['main_frame','sub_frame','stylesheet','script','image','font','object','xmlhttprequest','ping','csp_report','media','websocket','webtransport','other'], ...(excludedInitiatorDomains ? { excludedInitiatorDomains } : {}) },
   });
 
   // 3. Regex blocker rules (ID 100+)
@@ -445,6 +458,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'set_blacklist') {
     (async () => {
       await chrome.storage.local.set({ [STORAGE_KEYS.BLACKLIST]: message.domains || [] });
+      // Rebuild DNR rules with updated exclusions
+      const profileData = await chrome.storage.local.get(STORAGE_KEYS.PROFILE);
+      let ua = '';
+      try { ua = JSON.parse(profileData[STORAGE_KEYS.PROFILE]).ua; } catch (e) {}
+      if (ua) await applyAllDNRRules(ua);
       sendResponse({ success: true });
     })();
     return true;

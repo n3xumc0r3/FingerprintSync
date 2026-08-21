@@ -312,6 +312,10 @@
           return gpu.renderer;
         case 0x1F00: // VENDOR
           return gpu.vendor;
+        case 0x9245: // UNMASKED_VENDOR_WEBGL
+          return gpu.unmaskedVendor || gpu.vendor;
+        case 0x9246: // UNMASKED_RENDERER_WEBGL
+          return gpu.unmaskedRenderer || gpu.renderer;
         case 0x0D33: // MAX_TEXTURE_SIZE
           return gpu.maxTextureSize;
         case 0x0D3A: // MAX_RENDERBUFFER_SIZE
