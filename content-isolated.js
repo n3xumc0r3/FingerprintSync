@@ -1,9 +1,8 @@
 /**
  * FingerprintSync — ISOLATED world content script
- * Runs at document_start. Injects MAIN world script IMMEDIATELY
- * (before any page JS). The MAIN script waits for profile data
- * via MutationObserver before installing any hooks.
- * Blacklisted sites receive data-skip signal → no hooks installed.
+ * Runs at document_start. Injects MAIN world script as INLINE script
+ * (synchronous, no network fetch needed) so it runs BEFORE any page JS.
+ * Blacklisted sites receive data-skip signal → no profile hooks installed.
  */
 
 (function FingerprintSyncIsolated() {
@@ -61,13 +60,29 @@
     return false;
   }
 
-  // STEP 1: Inject MAIN world script IMMEDIATELY at document_start.
-  // The script will NOT install any hooks until it receives profile data.
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('content-main.js');
-  (document.head || document.documentElement).appendChild(script);
+  // ═══════════════════════════════════════════════════════════════
+  // INJECT content-main.js as INLINE script (SYNCHRONOUS — no network)
+  // Using synchronous XMLHttpRequest to fetch the script content,
+  // then inject it as an inline <script> tag. This runs immediately
+  // without waiting for a network round-trip to the extension URL.
+  // ═══════════════════════════════════════════════════════════════
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', chrome.runtime.getURL('content-main.js'), false); // false = synchronous
+    xhr.send();
+    if (xhr.status === 200) {
+      const inlineScript = document.createElement('script');
+      inlineScript.textContent = xhr.responseText;
+      (document.head || document.documentElement).appendChild(inlineScript);
+      inlineScript.remove(); // Clean up
+    }
+  } catch (e) {
+    console.warn('[FingerprintSync] Failed to inject MAIN script:', e);
+  }
 
-  // STEP 2: Async read storage and pass data via DOM element.
+  // ═══════════════════════════════════════════════════════════════
+  // Async read storage and pass data via DOM element.
+  // ═══════════════════════════════════════════════════════════════
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     chrome.storage.local.get([
       'fpsync_profile', 'fpsync_enabled', 'fpsync_blacklist',

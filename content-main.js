@@ -141,7 +141,7 @@
     return imgData;
   };
 
-  console.log('[FPSync] Phase 1: Canvas hooks installed immediately at', performance.now(), 'ms, temp seed:', _prngState);
+  // Phase 1 canvas hooks now active — installed before any page JS
 
   // ═══════════════════════════════════════════════════════════════
   // PHASE 2 — Profile-dependent hooks (installed AFTER profile arrives)
@@ -467,7 +467,7 @@
     const origFetch = window.fetch;
     window.fetch = function(input, init) {
       const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
-      console.log('[FPSync] Fetch:', url.substring(0, 80));
+      
       if (fpSettings.localNetBlock && isLocalIP(url)) return Promise.reject(new TypeError('Failed to fetch'));
       return origFetch.call(this, input, init);
     };
@@ -530,7 +530,7 @@
       if (navigator.isProtocolHandlerRegistered) navigator.isProtocolHandlerRegistered = function() { return false; };
     }
 
-    console.log('[FPSync] Phase 2: Profile hooks installed at', performance.now(), 'ms, seed:', _prngState);
+    
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -541,7 +541,7 @@
     _ready = true;
     // Re-seed PRNG with profile seed for deterministic noise
     _prngState = profile.seed | 0;
-    console.log('[FPSync] Profile ready, re-seeded PRNG:', _prngState, 'at', performance.now(), 'ms');
+    
     // Install profile-dependent hooks (Navigator, Screen, WebGL, etc.)
     installProfileHooks();
   }
