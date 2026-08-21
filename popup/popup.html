@@ -224,7 +224,9 @@ ad_"></textarea></div>
     <div class="section">
       <div class="section-title">Site Exclusion List</div>
       <div class="card" style="font-size:10px;color:#7a7a9e;line-height:1.5;margin-bottom:10px;">
-        Sites listed below will <b style="color:#53a8b6">not</b> have any fingerprint spoofing applied. One domain per line. Supports subdomains.
+        Sites listed below will <b style="color:#53a8b6">not</b> have any fingerprint spoofing applied.<br>
+        One entry per line. Supports subdomains.<br>
+        <b style="color:#53a8b6">Regex:</b> wrap in <code>/.../</code> — e.g. <code>/.*\.banking\.com/</code> matches hostname or full URL.
       </div>
     </div>
     <div class="section">
@@ -232,7 +234,8 @@ ad_"></textarea></div>
       <div class="card">
         <textarea id="blacklistInput" placeholder="example.com
 mail.google.com
-*.localtest.me"></textarea>
+/.*\.banking-.*\.com/
+/^https:\/\/.*\.localtest\.me/"></textarea>
         <div class="input-row">
           <button class="btn btn-primary" id="blacklistSaveBtn">Save List</button>
           <span id="blacklistStatus" style="font-size:10px;color:#4caf50;margin-left:8px;"></span>

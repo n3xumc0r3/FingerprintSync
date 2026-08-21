@@ -13,9 +13,10 @@
   if (document.documentElement.dataset[MARKER]) return;
   document.documentElement.dataset[MARKER] = '1';
 
-  // Extract hostname for blacklist check
+  // Extract hostname and full URL for blacklist check
   let hostname = '';
-  try { hostname = location.hostname.toLowerCase(); } catch (e) {}
+  let pageUrl = '';
+  try { hostname = location.hostname.toLowerCase(); pageUrl = location.href; } catch (e) {}
 
   function injectMainScript(profile, settings) {
     const dataEl = document.createElement('div');
@@ -29,17 +30,24 @@
     (document.head || document.documentElement).appendChild(script);
   }
 
-  function isBlacklisted(hostname, blacklist) {
-    if (!hostname || !blacklist || !blacklist.length) return false;
+  function isBlacklisted(hostname, url, blacklist) {
+    if (!blacklist || !blacklist.length) return false;
     for (const entry of blacklist) {
-      const domain = entry.trim().toLowerCase();
-      if (!domain) continue;
-      // Exact match
+      const raw = entry.trim();
+      if (!raw) continue;
+      // Regex: lines wrapped in /.../ are treated as regex patterns
+      if (raw.startsWith('/') && raw.endsWith('/') && raw.length > 2) {
+        try {
+          const re = new RegExp(raw.slice(1, -1), 'i');
+          if (re.test(hostname) || re.test(url)) return true;
+        } catch (e) { /* skip invalid regex */ }
+        continue;
+      }
+      // Domain match
+      const domain = raw.toLowerCase();
+      if (!hostname) continue;
       if (hostname === domain) return true;
-      // Subdomain match: entry starts with '.' (.example.com matches sub.example.com but NOT example.com)
       if (domain.startsWith('.') && hostname.endsWith(domain)) return true;
-      // Wildcard: *.example.com or example.com (without dot) matches subdomains too
-      if (!domain.startsWith('.') && hostname === domain) return true;
       if (!domain.startsWith('.') && hostname.endsWith('.' + domain)) return true;
     }
     return false;
@@ -55,7 +63,7 @@
     ], (result) => {
       if (!result.fpsync_enabled) return;
       // Blacklist check — skip all spoofing on listed domains
-      if (isBlacklisted(hostname, result.fpsync_blacklist)) return;
+      if (isBlacklisted(hostname, pageUrl, result.fpsync_blacklist)) return;
       if (result.fpsync_profile) {
         try {
           const profile = typeof result.fpsync_profile === 'string'
