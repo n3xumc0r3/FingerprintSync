@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=440">
+  <title>FingerprintSync</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { width: 420px; min-height: 200px; max-height: 580px; overflow-y: auto; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; color: #e0e0e0; background: #1a1a2e; }
+    .header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #16213e; border-bottom: 1px solid #0f3460; position: sticky; top: 0; z-index: 10; }
+    .header h1 { font-size: 14px; font-weight: 600; color: #53a8b6; display: flex; align-items: center; gap: 8px; }
+    .header h1::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+    .header h1.active::before { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+    .header h1.inactive::before { background: #f44336; }
+    .toggle-btn { padding: 5px 12px; border: 1px solid #53a8b6; border-radius: 6px; background: transparent; color: #53a8b6; cursor: pointer; font-size: 11px; font-weight: 500; }
+    .toggle-btn:hover { background: #53a8b622; }
+    .toggle-btn.off { border-color: #f44336; color: #f44336; }
+    .tabs { display: flex; background: #121a30; border-bottom: 1px solid #0f346066; }
+    .tab { flex: 1; padding: 8px 4px; text-align: center; font-size: 10px; color: #7a7a9e; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
+    .tab:hover { color: #a0a0c0; background: #0f346022; }
+    .tab.active { color: #53a8b6; border-bottom-color: #53a8b6; }
+    .tab-content { display: none; padding: 12px 16px; }
+    .tab-content.active { display: block; }
+    .section { margin-bottom: 12px; }
+    .section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #7a7a9e; margin-bottom: 6px; }
+    .card { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 10px 12px; }
+    .row { display: flex; justify-content: space-between; align-items: flex-start; padding: 3px 0; border-bottom: 1px solid #0f346022; }
+    .row:last-child { border-bottom: none; }
+    .label { color: #7a7a9e; font-size: 11px; min-width: 85px; flex-shrink: 0; }
+    .value { color: #c0c0d8; font-size: 11px; text-align: right; word-break: break-all; max-width: 270px; }
+    .value.mono { font-family: 'Consolas', 'SF Mono', monospace; font-size: 10px; }
+    .timer-bar { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+    .progress-track { flex: 1; height: 3px; background: #0f3460; border-radius: 2px; overflow: hidden; }
+    .progress-fill { height: 100%; background: #53a8b6; border-radius: 2px; transition: width 0.3s; }
+    .time-label { font-size: 10px; color: #7a7a9e; min-width: 60px; text-align: right; }
+    .ttl-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    .ttl-row label { font-size: 10px; color: #7a7a9e; }
+    .ttl-row input { width: 44px; padding: 3px 4px; background: #0f3460; border: 1px solid #1a3a6e; border-radius: 4px; color: #e0e0e0; font-size: 11px; text-align: center; }
+    .ttl-row span { font-size: 10px; color: #7a7a9e; }
+    .vectors { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px; }
+    .vector-tag { padding: 3px 6px; background: #0f346044; border: 1px solid #0f346066; border-radius: 4px; font-size: 9px; color: #53a8b6; text-align: center; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    .btn { flex: 1; padding: 8px; border: none; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+    .btn-primary { background: #53a8b6; color: #1a1a2e; }
+    .btn-primary:hover { background: #63b8c6; }
+    .btn-secondary { background: #16213e; color: #c0c0d8; border: 1px solid #0f3460; }
+    .btn-secondary:hover { background: #1a2744; }
+    .btn-sm { padding: 4px 10px; font-size: 10px; flex: none; }
+    .footer { padding: 6px 16px; text-align: center; font-size: 9px; color: #4a4a6e; border-top: 1px solid #0f346033; }
+    /* Toggle switch */
+    .switch-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; }
+    .switch-row .label { font-size: 12px; color: #c0c0d8; }
+    .switch-row .sublabel { font-size: 10px; color: #7a7a9e; }
+    .switch { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch .slider { position: absolute; inset: 0; background: #0f3460; border-radius: 20px; cursor: pointer; transition: 0.3s; }
+    .switch .slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 2px; bottom: 2px; background: #7a7a9e; border-radius: 50%; transition: 0.3s; }
+    .switch input:checked + .slider { background: #53a8b6; }
+    .switch input:checked + .slider::before { transform: translateX(16px); background: #fff; }
+    /* Textarea */
+    textarea { width: 100%; height: 80px; background: #0f3460; border: 1px solid #1a3a6e; border-radius: 6px; color: #e0e0e0; font-family: 'Consolas', 'SF Mono', monospace; font-size: 11px; padding: 8px; resize: vertical; }
+    textarea:focus { outline: 1px solid #53a8b6; }
+    .input-row { display: flex; gap: 6px; margin-top: 6px; }
+    .input-row input { flex: 1; }
+    .stats-row { display: flex; gap: 16px; margin-top: 6px; }
+    .stat { font-size: 10px; color: #7a7a9e; }
+    .stat span { color: #53a8b6; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="statusTitle" class="active">FingerprintSync</h1>
+    <button id="toggleBtn" class="toggle-btn">Enabled</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="fingerprint">Fingerprint</div>
+    <div class="tab" data-tab="network">Network</div>
+    <div class="tab" data-tab="cleaner">Cleaner</div>
+    <div class="tab" data-tab="blocker">Blocker</div>
+  </div>
+
+  <!-- TAB: Fingerprint -->
+  <div class="tab-content active" id="tab-fingerprint">
+    <div class="section">
+      <div class="section-title">Session</div>
+      <div class="card">
+        <div class="row"><span class="label">Seed</span><span class="value mono" id="seedValue">—</span></div>
+        <div class="timer-bar"><div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div><span class="time-label" id="timeRemaining">—</span></div>
+        <div class="ttl-row"><label>TTL:</label><input type="number" id="ttlInput" min="1" max="168" value="12"><span>hours</span><button class="btn btn-secondary btn-sm" id="saveTtlBtn">Save</button></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Profile</div>
+      <div class="card">
+        <div class="row"><span class="label">OS</span><span class="value" id="profileOS">—</span></div>
+        <div class="row"><span class="label">User-Agent</span><span class="value mono" id="profileUA">—</span></div>
+        <div class="row"><span class="label">GPU</span><span class="value mono" id="profileGPU">—</span></div>
+        <div class="row"><span class="label">Screen</span><span class="value" id="profileScreen">—</span></div>
+        <div class="row"><span class="label">Timezone</span><span class="value" id="profileTZ">—</span></div>
+        <div class="row"><span class="label">Language</span><span class="value" id="profileLang">—</span></div>
+        <div class="row"><span class="label">CPU / RAM</span><span class="value" id="profileCPU">—</span></div>
+        <div class="row"><span class="label">Fonts</span><span class="value" id="profileFonts">—</span></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Protected Vectors</div>
+      <div class="vectors">
+        <div class="vector-tag">Canvas</div><div class="vector-tag">WebGL</div><div class="vector-tag">Audio</div><div class="vector-tag">Fonts</div>
+        <div class="vector-tag">ClientRects</div><div class="vector-tag">WebGPU</div><div class="vector-tag">Navigator</div><div class="vector-tag">Screen</div>
+        <div class="vector-tag">Timezone</div><div class="vector-tag">Geo</div><div class="vector-tag">UA Headers</div><div class="vector-tag">CH</div>
+        <div class="vector-tag">WebRTC</div><div class="vector-tag">LAN Block</div><div class="vector-tag">Protocols</div><div class="vector-tag">LinkClean</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="rotateBtn">Rotate Identity</button>
+      <button class="btn btn-secondary" id="testBtn">Test on BrowserLeaks</button>
+    </div>
+  </div>
+
+  <!-- TAB: Network -->
+  <div class="tab-content" id="tab-network">
+    <div class="section">
+      <div class="section-title">Leak Protection</div>
+      <div class="card">
+        <div class="switch-row">
+          <div><div class="label">WebRTC IP Leak Block</div><div class="sublabel">Strip ICE candidates from SDP, block onicecandidate</div></div>
+          <label class="switch"><input type="checkbox" id="webrtcToggle" checked><span class="slider"></span></label>
+        </div>
+        <div class="switch-row">
+          <div><div class="label">Local Network Probing Block</div><div class="sublabel">Block fetch/XHR to 10.x, 172.16-31.x, 192.168.x.x</div></div>
+          <label class="switch"><input type="checkbox" id="localNetToggle" checked><span class="slider"></span></label>
+        </div>
+        <div class="switch-row">
+          <div><div class="label">Custom Protocol Scheme Block</div><div class="sublabel">Block slack://, zoom://, discord://, telegram://, etc.</div></div>
+          <label class="switch"><input type="checkbox" id="protocolToggle" checked><span class="slider"></span></label>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">What this protects against</div>
+      <div class="card" style="font-size:10px; color:#7a7a9e; line-height:1.5;">
+        <b style="color:#53a8b6">WebRTC:</b> Sites can discover your real (local + public) IP via RTCPeerConnection ICE candidates. Even behind VPN.<br><br>
+        <b style="color:#53a8b6">LAN Probing:</b> Sites scan your local network by timing requests to private IPs. Reveals router model, number of devices, device types.<br><br>
+        <b style="color:#53a8b6">Protocol Schemes:</b> Sites detect installed software by timing iframe navigations to custom URLs. If zoom:// resolves fast, Zoom is installed.<br>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: Link Cleaner -->
+  <div class="tab-content" id="tab-cleaner">
+    <div class="section">
+      <div class="section-title">Auto-Clean</div>
+      <div class="card">
+        <div class="switch-row">
+          <div class="label">Enable Link Cleaner</div>
+          <label class="switch"><input type="checkbox" id="lcToggle" checked><span class="slider"></span></label>
+        </div>
+        <div class="switch-row">
+          <div><div class="label">Aggressive Mode</div><div class="sublabel">Also strip generic params (ref, id, source, campaign, etc.)</div></div>
+          <label class="switch"><input type="checkbox" id="lcAggressive"><span class="slider"></span></label>
+        </div>
+        <div class="stats-row">
+          <div class="stat">Cleaned all-time: <span id="lcStatsAll">0</span></div>
+          <div class="stat">This session: <span id="lcStatsSession">0</span></div>
+          <button class="btn btn-secondary btn-sm" id="lcResetStats">Reset</button>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Custom Parameters (one per line)</div>
+      <div class="card"><textarea id="lcCustomParams" placeholder="my_tracker
+promo_code
+ref"></textarea></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Custom Prefixes (one per line)</div>
+      <div class="card"><textarea id="lcCustomPrefixes" placeholder="custom_
+track_
+ad_"></textarea></div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="lcSaveBtn">Save Settings</button>
+    </div>
+  </div>
+
+  <!-- TAB: Regex Blocker -->
+  <div class="tab-content" id="tab-blocker">
+    <div class="section">
+      <div class="section-title">Regex URL Blocker</div>
+      <div class="card">
+        <textarea id="regexInput" placeholder="^https://example\.com/.*api/\n^https://tracker\.evil\.com/.*"></textarea>
+        <div class="input-row"><button class="btn btn-primary" id="regexSaveBtn">Apply Rules</button><span id="regexStatus" style="font-size:10px;color:#4caf50;margin-left:8px;"></span></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Active Rules</div>
+      <div class="card"><div id="regexList" style="font-size:10px; color:#7a7a9e;">No rules</div></div>
+    </div>
+  </div>
+
+  <div class="footer">All fingerprint vectors share one seed — consistent within session, changes on rotation</div>
+  <script src="popup.js"></script>
+</body>
+</html>
