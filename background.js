@@ -109,6 +109,8 @@ async function generateAndStoreProfile() {
   const profile = engine.getProfile();
   await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE]: JSON.stringify(profile) });
   await applyAllDNRRulesLocked(profile.ua);
+  // Re-register MAIN world script (ensures it's active after profile changes)
+  registerMainWorldScript().catch(() => {});
   return profile;
 }
 
@@ -318,22 +320,6 @@ function applyAllDNRRulesLocked(uaString) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // --- MAIN world injection request from content-isolated.js ---
-  if (message.type === 'inject_main') {
-    if (!sender.tab || !sender.tab.id) {
-      sendResponse({ success: false, error: 'No tab context' });
-      return false;
-    }
-    chrome.scripting.executeScript({
-      target: { tabId: sender.tab.id },
-      files: ['content-main.js'],
-      world: 'MAIN',
-      injectImmediately: true,
-    }).then(() => sendResponse({ success: true }))
-      .catch(e => sendResponse({ success: false, error: e.message }));
-    return true;
-  }
-
   // --- Fingerprint profile ---
   if (message.type === 'get_profile') {
     chrome.storage.local.get(STORAGE_KEYS.PROFILE, (data) => {
@@ -589,9 +575,35 @@ async function syncToIP() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// MAIN WORLD SCRIPT REGISTRATION
+// This is the ONLY reliable way to inject into MAIN world at document_start
+// in MV3. chrome.scripting.registerContentScripts bypasses CSP and runs
+// before any page JavaScript, preventing race conditions on canvas APIs.
+// ═══════════════════════════════════════════════════════════════
+async function registerMainWorldScript() {
+  try {
+    // Unregister first to avoid conflicts on update/reload
+    try { await chrome.scripting.unregisterContentScripts(['fpsync-main-world']); } catch (e) {}
+    await chrome.scripting.registerContentScripts([{
+      id: 'fpsync-main-world',
+      js: ['content-main.js'],
+      matches: ['<all_urls>'],
+      runAt: 'document_start',
+      world: 'MAIN',
+    }]);
+    console.log('[FingerprintSync] MAIN world script registered via registerContentScripts');
+  } catch (e) {
+    console.warn('[FingerprintSync] registerContentScripts failed:', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // INITIALIZATION
 // ═══════════════════════════════════════════════════════════════
 chrome.runtime.onInstalled.addListener(async (details) => {
+  // Register MAIN world content script FIRST (before anything else)
+  await registerMainWorldScript();
+
   if (details.reason === 'install') {
     await chrome.storage.local.set({ [STORAGE_KEYS.ENABLED]: true });
     await generateAndStoreProfile();
@@ -602,6 +614,9 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  // Register MAIN world content script FIRST
+  await registerMainWorldScript();
+
   await generateAndStoreProfile();
   // Auto-sync IP on browser start
   const data = await chrome.storage.local.get(STORAGE_KEYS.AUTO_SYNC);
@@ -612,6 +627,9 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 (async () => {
+  // Register MAIN world content script FIRST
+  await registerMainWorldScript();
+
   const data = await chrome.storage.local.get([STORAGE_KEYS.ENABLED, STORAGE_KEYS.AUTO_SYNC]);
   if (data[STORAGE_KEYS.ENABLED] !== false) {
     await generateAndStoreProfile();

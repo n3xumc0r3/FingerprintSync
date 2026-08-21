@@ -141,7 +141,7 @@
     return imgData;
   };
 
-  console.log('[FPSync] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
+  console.log('[FPSync v2.0.1] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
 
   // ═══════════════════════════════════════════════════════════════
   // PHASE 2 — Profile-dependent hooks (installed AFTER profile arrives)

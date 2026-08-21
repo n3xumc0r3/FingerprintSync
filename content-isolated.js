@@ -2,9 +2,9 @@
  * FingerprintSync — ISOLATED world content script
  * Runs at document_start (manifest-declared, guaranteed).
  *
- * Job 1: Request background to inject content-main.js into MAIN world
- *         via chrome.scripting.executeScript (bypasses CSP, runs immediately).
- * Job 2: Read storage and pass profile data via DOM element.
+ * content-main.js is injected into MAIN world via
+ * chrome.scripting.registerContentScripts (set up in background.js).
+ * This script ONLY handles profile delivery via DOM element.
  */
 
 (function FingerprintSyncIsolated() {
@@ -15,19 +15,8 @@
   if (document.documentElement.dataset[MARKER]) return;
   document.documentElement.dataset[MARKER] = '1';
 
-  // ─── JOB 1: Request MAIN world injection from background ───
-  // This is the most reliable MV3 method for MAIN world injection.
-  // chrome.scripting.executeScript bypasses CSP and with injectImmediately
-  // runs before any page JS.
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-    chrome.runtime.sendMessage({ type: 'inject_main' }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.warn('[FPSync] MAIN injection failed:', chrome.runtime.lastError.message);
-      }
-    });
-  }
-
-  // ─── JOB 2: Profile delivery ───
+  // ─── Profile delivery via DOM element ───
+  // content-main.js (MAIN world) watches for __fpsync_data via MutationObserver.
   let hostname = '';
   let pageUrl = '';
   try { hostname = location.hostname.toLowerCase(); pageUrl = location.href; } catch (e) {}
