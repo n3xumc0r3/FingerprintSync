@@ -45,6 +45,7 @@ const STORAGE_KEYS = {
   PROTOCOL_BLOCK: 'fpsync_protocol_block',
   AUTO_SYNC: 'fpsync_auto_sync',
   SYNCED_IP: 'fpsync_synced_ip',
+  BLACKLIST: 'fpsync_blacklist',
 };
 
 const DEFAULT_SESSION_TTL = 12;
@@ -299,7 +300,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'get_settings') {
     chrome.storage.local.get(Object.values(STORAGE_KEYS), (data) => {
-      sendResponse({
+      const response = {
         success: true,
         enabled: data[STORAGE_KEYS.ENABLED] !== false,
         seed: data[STORAGE_KEYS.SEED],
@@ -324,11 +325,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         protocolBlock: data[STORAGE_KEYS.PROTOCOL_BLOCK] !== false,
         autoSync: data[STORAGE_KEYS.AUTO_SYNC] || false,
         syncedIP: null,
-      });
+        blacklist: data[STORAGE_KEYS.BLACKLIST] || [],
+      };
       // Attach synced IP data
       if (data[STORAGE_KEYS.SYNCED_IP]) {
-        try { resp.syncedIP = JSON.parse(data[STORAGE_KEYS.SYNCED_IP]); } catch (e) {}
+        try { response.syncedIP = JSON.parse(data[STORAGE_KEYS.SYNCED_IP]); } catch (e) {}
       }
+      sendResponse(response);
     });
     return true;
   }
@@ -435,6 +438,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true, profile, ip: ipData });
       } catch (e) { sendResponse({ success: false, error: e.message }); }
     })();
+    return true;
+  }
+
+  // --- Blacklist ---
+  if (message.type === 'set_blacklist') {
+    (async () => {
+      await chrome.storage.local.set({ [STORAGE_KEYS.BLACKLIST]: message.domains || [] });
+      sendResponse({ success: true });
+    })();
+    return true;
+  }
+  if (message.type === 'get_blacklist') {
+    chrome.storage.local.get(STORAGE_KEYS.BLACKLIST, (data) => {
+      sendResponse({ success: true, domains: data[STORAGE_KEYS.BLACKLIST] || [] });
+    });
     return true;
   }
 

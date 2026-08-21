@@ -133,11 +133,20 @@ function updateUI() {
   // Regex blocker tab
   $('regexInput').value = (s?.regexRules || []).join('\n');
   updateRegexList(s?.regexRules || []);
+
+  // Blacklist tab
+  $('blacklistInput').value = (s?.blacklist || []).join('\n');
+  updateBlacklistList(s?.blacklist || []);
 }
 
 function updateRegexList(rules) {
   $('regexList').innerHTML = rules.length === 0 ? 'No rules' :
     rules.map((r, i) => `<div style="padding:2px 0;border-bottom:1px solid #0f346022">${i + 1}. <span style="color:#53a8b6">${r}</span></div>`).join('');
+}
+
+function updateBlacklistList(domains) {
+  $('blacklistList').innerHTML = domains.length === 0 ? 'No exclusions' :
+    domains.map((d, i) => `<div style="padding:2px 0;border-bottom:1px solid #0f346022">${i + 1}. <span style="color:#f44336">${d}</span></div>`).join('');
 }
 
 function startTimer() {
@@ -232,5 +241,14 @@ function setupListeners() {
     updateRegexList(rules);
     $('regexStatus').textContent = rules.length + ' rules applied';
     setTimeout(() => $('regexStatus').textContent = '', 2000);
+  });
+
+  // Blacklist
+  $('blacklistSaveBtn').addEventListener('click', async () => {
+    const domains = $('blacklistInput').value.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean);
+    await sendMessage({ type: 'set_blacklist', domains });
+    updateBlacklistList(domains);
+    $('blacklistStatus').textContent = domains.length + ' domains excluded';
+    setTimeout(() => $('blacklistStatus').textContent = '', 2000);
   });
 }
