@@ -123,9 +123,18 @@ async function applyAllDNRRules(uaString) {
   // Read blacklist — extract plain domains (not regex) for DNR exclusion
   const blData = await chrome.storage.local.get(STORAGE_KEYS.BLACKLIST);
   const rawBlacklist = blData[STORAGE_KEYS.BLACKLIST] || [];
+  const REGEX_CHARS_BG = /[.*+?^${}()|\[\]]/;
   const excludedDomains = rawBlacklist
-    .filter(e => !e.trim().startsWith('/') || !e.trim().endsWith('/'))
-    .map(e => e.trim().toLowerCase().replace(/^\./, ''))
+    .map(e => e.trim())
+    .filter(e => {
+      if (!e) return false;
+      // Skip /pattern/ delimiters
+      if (e.startsWith('/') && e.lastIndexOf('/') > 0) return false;
+      // Skip bare regex (has metacharacters beyond dots)
+      if (REGEX_CHARS_BG.test(e.replace(/\./g, ''))) return false;
+      return true;
+    })
+    .map(e => e.toLowerCase().replace(/^\./, ''))
     .filter(Boolean);
   // Remove eTLD+1 duplicates
   const domainSet = [...new Set(excludedDomains)];
@@ -225,11 +234,29 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const blacklist = settings[STORAGE_KEYS.BLACKLIST] || [];
   if (blacklist.length > 0) {
     let hostname = '';
-    try { hostname = new URL(tab.url).hostname.toLowerCase(); } catch (e) {}
+    let tabUrl = '';
+    try { hostname = new URL(tab.url).hostname.toLowerCase(); tabUrl = tab.url; } catch (e) {}
+    const RC = /[.*+?^${}()|\[\]]/;
     for (const entry of blacklist) {
-      const d = entry.trim().toLowerCase();
-      if (!d) continue;
-      if (hostname === d || hostname.endsWith('.' + d)) { return; }
+      const raw = entry.trim();
+      if (!raw) continue;
+      // Regex with delimiters
+      if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
+        try {
+          const ls = raw.lastIndexOf('/');
+          const re = new RegExp(raw.slice(1, ls), raw.slice(ls + 1).includes('i') ? raw.slice(ls + 1) : raw.slice(ls + 1) + 'i');
+          if (re.test(hostname) || re.test(tabUrl)) return;
+        } catch(e) {}
+        continue;
+      }
+      // Bare regex
+      if (RC.test(raw.replace(/\./g, ''))) {
+        try { if (new RegExp(raw, 'i').test(hostname) || new RegExp(raw, 'i').test(tabUrl)) return; } catch(e) {}
+        continue;
+      }
+      // Plain domain
+      const d = raw.toLowerCase();
+      if (hostname === d || hostname.endsWith('.' + d)) return;
     }
   }
 
