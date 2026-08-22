@@ -108,7 +108,7 @@ async function generateAndStoreProfile() {
   const engine = new ProfileEngine(seed);
   const profile = engine.getProfile();
   await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE]: JSON.stringify(profile) });
-  await applyAllDNRRulesLocked(profile.ua);
+  await applyAllDNRRulesLocked(profile);
   return profile;
 }
 
@@ -158,10 +158,39 @@ async function applyAllDNRRules(uaString) {
         { header: 'Sec-CH-UA', operation: 'set', value: `"Not A(Brand";v="99", "Google Chrome";v="${chromeVer}"` },
         { header: 'Sec-CH-UA-Mobile', operation: 'set', value: '?0' },
         { header: 'Sec-CH-UA-Platform', operation: 'set', value: chPlatform },
+        { header: 'DNT', operation: 'remove' },
       ],
     },
     condition: { urlFilter: '*://*/*', resourceTypes: ['main_frame','sub_frame','stylesheet','script','image','font','object','xmlhttprequest','ping','csp_report','media','websocket','webtransport','other'], ...(excludedInitiatorDomains ? { excludedInitiatorDomains } : {}) },
   });
+
+  // 2b. Client Hints — Viewport-Width, Device-Memory, DPR (v2.0.8)
+  // These leak real screen/device info at HTTP level
+  try {
+    const profileData = await chrome.storage.local.get(STORAGE_KEYS.PROFILE);
+    let chProfile = null;
+    if (profileData[STORAGE_KEYS.PROFILE]) {
+      chProfile = typeof profileData[STORAGE_KEYS.PROFILE] === 'string'
+        ? JSON.parse(profileData[STORAGE_KEYS.PROFILE])
+        : profileData[STORAGE_KEYS.PROFILE];
+    }
+    if (chProfile && chProfile.screen) {
+      const chExtraHeaders = [
+        { header: 'Sec-CH-Viewport-Width', operation: 'set', value: String(chProfile.screen.width) },
+        { header: 'Sec-CH-Device-Memory', operation: 'set', value: String(chProfile.deviceMemory || 8) },
+      ];
+      if (chProfile.screen.devicePixelRatio !== undefined) {
+        chExtraHeaders.push({ header: 'Sec-CH-DPR', operation: 'set', value: String(chProfile.screen.devicePixelRatio) });
+      }
+      allRules.push({
+        id: 3, priority: 1,
+        action: { type: 'modifyHeaders', requestHeaders: chExtraHeaders },
+        condition: { urlFilter: '*://*/*', resourceTypes: ['main_frame','sub_frame','stylesheet','script','image','font','object','xmlhttprequest','ping','csp_report','media','websocket','webtransport','other'], ...(excludedInitiatorDomains ? { excludedInitiatorDomains } : {}) },
+      });
+    }
+  } catch(chErr) {
+    console.warn('[FingerprintSync] Client Hints viewport/memory/dpr rules failed:', chErr.message);
+  }
 
   // 3. Regex blocker rules (ID 100+)
   const data = await chrome.storage.local.get(STORAGE_KEYS.REGEX_RULES);

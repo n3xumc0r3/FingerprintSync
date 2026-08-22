@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "FingerprintSync",
   "description": "Synchronized fingerprint spoofing + WebRTC leak protection + Local Network blocking + Protocol scheme protection + Link Cleaner + Regex URL blocker — all in one.",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "author": "FingerprintSync",
   "permissions": [
     "storage",

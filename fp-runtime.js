@@ -1,9 +1,13 @@
 /**
- * FingerprintSync v2.0.7 — MAIN world content script (Phase 2 only)
+ * FingerprintSync v2.0.8 — MAIN world content script (Phase 2 only)
  * Injected at document_start via manifest "world": "MAIN".
  *
  * Canvas hooks are in canvas-hooks.js (loaded BEFORE this file).
  * This file handles Phase 2: Navigator/Screen/WebGL/Audio/etc. + re-seeds PRNG.
+ *
+ * v2.0.8: IFRAME FIX — chrome.storage.local fallback for profile loading,
+ *   extended MutationObserver timeout, multiple profile delivery paths.
+ *   Also fixes: DateTimeFormat locale, DNT sync, Client Hints Viewport/Memory/DPR.
  */
 
 (function FingerprintSyncMain() {
@@ -133,7 +137,7 @@
       try { Object.defineProperty(window, 'innerHeight', { configurable: true, get: function() { return _sIH; } }); } catch(e) {}
       try { Object.defineProperty(window, 'outerWidth',  { configurable: true, get: function() { return _sOW; } }); } catch(e) {}
       try { Object.defineProperty(window, 'outerHeight', { configurable: true, get: function() { return _sOH; } }); } catch(e) {}
-      console.log('[FPSync v2.0.7] Screen: inner', _sIW, 'x', _sIH, '| outer', _sOW, 'x', _sOH, '| chrome', _chromeW, 'x', _chromeH);
+      console.log('[FPSync v2.0.8] Screen: inner', _sIW, 'x', _sIH, '| outer', _sOW, 'x', _sOH, '| chrome', _chromeW, 'x', _chromeH);
     } catch(e) {}
 
     // ── 2c. DOCUMENT ELEMENT DIMENSIONS + DPR ──
@@ -159,8 +163,8 @@
       if (profile.screen.devicePixelRatio !== undefined) {
         try { Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function() { return profile.screen.devicePixelRatio; } }); } catch(ede) {}
       }
-      console.log('[FPSync v2.0.7] DocElement dims + DPR hook OK');
-    } catch(e) { console.warn('[FPSync v2.0.7] DocElement dims failed:', e); }
+      console.log('[FPSync v2.0.8] DocElement dims + DPR hook OK');
+    } catch(e) { console.warn('[FPSync v2.0.8] DocElement dims failed:', e); }
 
     // ── 3. WEBGL FINGERPRINT ──
     function hookWebGLGetParameter(gpu) {
@@ -323,12 +327,12 @@
             },
             set: _styleAccDesc.set
           });
-          console.log('[FPSync v2.0.7] Font: Proxy on style installed OK');
+          console.log('[FPSync v2.0.8] Font: Proxy on style installed OK');
         } else {
-          console.warn('[FPSync v2.0.7] Font: No style accessor descriptor');
+          console.warn('[FPSync v2.0.8] Font: No style accessor descriptor');
         }
       } catch (e) {
-        console.warn('[FPSync v2.0.7] Font: Proxy install failed:', e);
+        console.warn('[FPSync v2.0.8] Font: Proxy install failed:', e);
       }
 
       // Also hook setAttribute('style', ...) — not covered by Proxy
@@ -388,14 +392,20 @@
           }
         });
       }
-      console.log('[FPSync v2.0.7] Offset noise installed (ow:', !!_owDesc, 'oh:', !!_ohDesc, ')');
+      console.log('[FPSync v2.0.8] Offset noise installed (ow:', !!_owDesc, 'oh:', !!_ohDesc, ')');
     } catch(e) {
-      console.warn('[FPSync v2.0.7] Offset noise failed:', e);
+      console.warn('[FPSync v2.0.8] Offset noise failed:', e);
     }
 
     // ── 7. WEBGPU ──
+    // v2.0.8: Also proxy adapter.features and adapter.limits (not just adapter.info)
     if (navigator.gpu) {
       const origRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
+      const _wgpuFeatures = new Set(profile.webgpu.features || []);
+      const _wgpuLimits = {
+        maxTextureDimension1D: profile.gpu.maxTextureSize, maxTextureDimension2D: profile.gpu.maxTextureSize,
+        maxTextureArrayLayers: 256, maxBindGroups: 4,
+      };
       navigator.gpu.requestAdapter = async function(...args) {
         if (args[0] && typeof args[0] === 'object' && 'powerPreference' in args[0]) {
           const { powerPreference, ...rest } = args[0];
@@ -410,10 +420,13 @@
             if (prop === 'info') {
               return {
                 vendor: webgpu.vendor, architecture: webgpu.architecture, device: webgpu.device,
-                description: webgpu.description, features: new Set(webgpu.features || []),
-                limits: { maxTextureDimension1D: gpu.maxTextureSize, maxTextureDimension2D: gpu.maxTextureSize, maxTextureArrayLayers: 256, maxBindGroups: 4 },
+                description: webgpu.description, features: _wgpuFeatures,
+                limits: _wgpuLimits,
               };
             }
+            // v2.0.8: Proxy direct adapter.features and adapter.limits
+            if (prop === 'features') return _wgpuFeatures;
+            if (prop === 'limits') return _wgpuLimits;
             const val = target[prop];
             if (typeof val === 'function') return val.bind(target);
             return val;
@@ -424,10 +437,14 @@
 
     // ── 8. TIMEZONE (Intl.DateTimeFormat) ──
     // Fixed: sets timeZone OPTION (not locale) so formatting actually uses spoofed TZ
+    // v2.0.8: Also forces locale from profile language (e.g. ja-JP instead of real browser locale ru)
     try {
       var origDateTimeFormat = Intl.DateTimeFormat;
       var _origDTFSupportedLocalesOf = origDateTimeFormat.supportedLocalesOf;
+      var _profileLocale = profile.language || undefined;
       Intl.DateTimeFormat = function(...args) {
+        // Force profile locale if no explicit locale provided or if using browser default
+        if (!args[0] || (typeof args[0] === 'undefined')) args[0] = _profileLocale;
         if (!args[1] || typeof args[1] !== 'object') args[1] = {};
         if (!args[1].timeZone) args[1].timeZone = profile.timezone;
         return new origDateTimeFormat(args[0], args[1]);
@@ -544,8 +561,8 @@
         }
       } catch(ef) {}
 
-      console.log('[FPSync v2.0.7] Date/Time: shift=' + _dateShift + 'ms TZ=' + profile.timezone + ' ' + _gmStr + ' (' + _tzAbbr + ')');
-    } catch(e) { console.warn('[FPSync v2.0.7] Date/Time failed:', e); }
+      console.log('[FPSync v2.0.8] Date/Time: shift=' + _dateShift + 'ms TZ=' + profile.timezone + ' ' + _gmStr + ' (' + _tzAbbr + ')');
+    } catch(e) { console.warn('[FPSync v2.0.8] Date/Time failed:', e); }
 
     // ── 9. GEOLOCATION ──
     const TZ_COORDS = {
@@ -571,9 +588,21 @@
     navigator.geolocation.watchPosition = function(s, e, o) { if (s) { const id = setInterval(() => s(makePos()), 5000); return prngInt(1, 99999); } return prngInt(1, 99999); };
 
     // ── 10. MATCH MEDIA / PREFERENCES ──
+    // v2.0.8: Also intercept device-width/device-height media queries to prevent CSS leak
     const origMatchMedia = window.matchMedia;
+    const _sw = profile.screen.width, _sh = profile.screen.height;
+    const _dwRe = /(?:min|max)-device-width\s*:\s*(\d+)/;
+    const _dhRe = /(?:min|max)-device-height\s*:\s*(\d+)/;
     window.matchMedia = function(q) {
-      const r = origMatchMedia.call(this, q);
+      // Rewrite device-width/device-height queries to use profile screen dimensions
+      let rewritten = q;
+      rewritten = rewritten.replace(_dwRe, function(m, val) {
+        return m.replace(String(val), String(_sw));
+      });
+      rewritten = rewritten.replace(_dhRe, function(m, val) {
+        return m.replace(String(val), String(_sh));
+      });
+      const r = origMatchMedia.call(this, rewritten);
       if (q === '(prefers-color-scheme: dark)') {
         const mql = Object.create(MediaQueryList.prototype);
         Object.defineProperty(mql, 'matches', { value: prngNext() < 0.45, writable: false, configurable: true });
@@ -744,7 +773,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // PROFILE LOADER — MutationObserver waits for __fpsync_data
+  // PROFILE LOADER ── Multiple delivery paths for iframe reliability
   // ═══════════════════════════════════════════════════════════════
   function onProfileReady() {
     if (_ready) return;
@@ -752,30 +781,93 @@
     _prngState = profile.seed | 0;
     // Re-seed the global PRNG used by canvas-hooks.js so canvas noise is deterministic
     if (_globalPrng) _globalPrng.setSeed(profile.seed | 0);
-    console.log('[FPSync v2.0.7] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms');
+    console.log('[FPSync v2.0.8] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms', window !== window.top ? '[IFRAME]' : '[TOP]');
     installProfileHooks();
   }
 
+  // ── Fallback: load profile directly from chrome.storage.local ──
+  // Critical for iframes where MutationObserver may miss __fpsync_data element.
+  // In MAIN world, chrome.storage.local is accessible (no web_accessible needed).
+  function loadProfileFromStorage() {
+    if (_ready) return;
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get([
+          'fpsync_profile', 'fpsync_enabled',
+          'fpsync_webrtc_block', 'fpsync_local_net_block', 'fpsync_protocol_block',
+          'fpsync_link_cleaner', 'fpsync_link_cleaner_aggressive',
+          'fpsync_link_cleaner_custom_params', 'fpsync_link_cleaner_custom_prefixes'
+        ], function(data) {
+          if (_ready) return;
+          if (data.fpsync_enabled === false) return;
+          if (!data.fpsync_profile) return;
+          try {
+            profile = typeof data.fpsync_profile === 'string' ? JSON.parse(data.fpsync_profile) : data.fpsync_profile;
+            if (data.fpsync_webrtc_block !== undefined) fpSettings.webrtcBlock = data.fpsync_webrtc_block;
+            if (data.fpsync_local_net_block !== undefined) fpSettings.localNetBlock = data.fpsync_local_net_block;
+            if (data.fpsync_protocol_block !== undefined) fpSettings.protocolBlock = data.fpsync_protocol_block;
+            if (data.fpsync_link_cleaner !== undefined) fpSettings.linkCleaner.enabled = data.fpsync_link_cleaner;
+            if (data.fpsync_link_cleaner_aggressive) fpSettings.linkCleaner.aggressive = true;
+            if (data.fpsync_link_cleaner_custom_params) fpSettings.linkCleaner.customParams = data.fpsync_link_cleaner_custom_params;
+            if (data.fpsync_link_cleaner_custom_prefixes) fpSettings.linkCleaner.customPrefixes = data.fpsync_link_cleaner_custom_prefixes;
+            console.log('[FPSync v2.0.8] Profile loaded from chrome.storage fallback', window !== window.top ? '[IFRAME]' : '[TOP]');
+            onProfileReady();
+          } catch(e) {
+            console.warn('[FPSync v2.0.8] Storage fallback parse error:', e);
+          }
+        });
+      }
+    } catch(e) {
+      // chrome.storage not available (e.g. about:blank without origin) ── silent
+    }
+  }
+
+  // ── Path 1: __fpsync_data element already exists (fast path) ──
   const existingEl = document.getElementById('__fpsync_data');
   if (existingEl) {
     if (existingEl.getAttribute('data-skip') === '1') return;
     try { const raw = existingEl.getAttribute('data-profile'); if (raw) profile = JSON.parse(decodeURIComponent(raw)); } catch (e) {}
     try { const rawS = existingEl.getAttribute('data-settings'); if (rawS) fpSettings = JSON.parse(decodeURIComponent(rawS)); } catch (e) {}
     existingEl.remove();
-    if (profile) onProfileReady();
+    if (profile) {
+      onProfileReady();
+    } else {
+      loadProfileFromStorage();
+    }
   } else {
+    // ── Path 2: MutationObserver watches for __fpsync_data ──
+    let _observerDone = false;
     const observer = new MutationObserver((mutations, obs) => {
       const el = document.getElementById('__fpsync_data');
       if (!el) return;
+      _observerDone = true;
       obs.disconnect();
       if (el.getAttribute('data-skip') === '1') return;
       try { const raw = el.getAttribute('data-profile'); if (raw) profile = JSON.parse(decodeURIComponent(raw)); } catch (e) {}
       try { const rawS = el.getAttribute('data-settings'); if (rawS) fpSettings = JSON.parse(decodeURIComponent(rawS)); } catch (e) {}
       el.remove();
       if (profile) onProfileReady();
+      else loadProfileFromStorage();
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    setTimeout(() => observer.disconnect(), 3000);
+
+    // ── Path 3: If MutationObserver doesn't fire within 2s, try storage directly ──
+    setTimeout(() => {
+      if (_ready) return;
+      if (!_observerDone) {
+        observer.disconnect();
+        loadProfileFromStorage();
+      }
+    }, 2000);
+
+    // ── Path 4: For iframes created after document_start, retry on DOMContentLoaded ──
+    if (document.readyState !== 'loading') {
+      if (!_ready) loadProfileFromStorage();
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        if (!_ready) loadProfileFromStorage();
+      });
+    }
   }
 
 })();
