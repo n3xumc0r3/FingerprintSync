@@ -1,20 +1,13 @@
 /**
- * FingerprintSync — MAIN world content script
- * Injected IMMEDIATELY at document_start (before any page JS).
+ * FingerprintSync v2.0.4 — MAIN world content script
+ * Injected at document_start via manifest "world": "MAIN".
  *
- * Architecture:
- *   Phase 1 (IMMEDIATE, document_start):
- *     - Save ALL original API references
- *     - Install CANVAS hooks immediately (with random temp seed)
- *       → prevents ANY page JS from seeing real canvas data
- *   Phase 2 (after profile arrives via MutationObserver):
- *     - Re-seed PRNG with profile seed for deterministic noise
- *     - Install Navigator/Screen/WebGL/Audio/etc hooks (need profile data)
- *   Blacklisted sites: receive data-skip → Phase 2 skipped, canvas hooks remain
- *     (canvas hooks with temp seed are harmless, just adds random noise)
+ * Phase 1 (IMMEDIATE): Canvas hooks — exact Canvas Defender approach
+ *   Proxy + in-place pixel modification + Reflect.apply
+ * Phase 2 (after profile): Navigator/Screen/WebGL/Audio/etc.
  */
 
-console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFixed(1), 'ms');
+console.log('[FPSync v2.0.4] page-context.js loaded at', performance.now().toFixed(1), 'ms');
 
 (function FingerprintSyncMain() {
   // Prevent double-injection
@@ -25,8 +18,6 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
 
   // ─── Profile state ───
   let profile = null;
-  // Use crypto-based random seed initially so canvas noise is ALWAYS active
-  // even before profile arrives. Re-seeded with profile.seed when ready.
   let _prngState = (crypto.getRandomValues(new Uint32Array(1))[0]) | 1;
   let fpSettings = { webrtcBlock: true, localNetBlock: true, protocolBlock: true, linkCleaner: { enabled: true, aggressive: false, customParams: '', customPrefixes: '' } };
   let _ready = false;
@@ -63,89 +54,65 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // PHASE 1 — IMMEDIATE canvas hooks (BEFORE any page JS runs)
-  // This prevents race conditions where page scripts grab
-  // original toDataURL/getImageData references before we hook them.
+  // PHASE 1 — Canvas hooks (exact Canvas Defender approach)
+  // Proxy + in-place noisify + Reflect.apply
   // ═══════════════════════════════════════════════════════════════
 
-  // Save canvas originals IMMEDIATELY
-  const _origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-  const _origToBlob = HTMLCanvasElement.prototype.toBlob;
   const _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-  const _origGetContext = HTMLCanvasElement.prototype.getContext;
 
-  function applyCanvasNoise(ctx, canvas) {
+  function noisify(canvas, context) {
+    if (!context) return;
     const w = canvas.width;
     const h = canvas.height;
-    if (w === 0 || h === 0) return;
-    const imgData = _origGetImageData.call(ctx, 0, 0, w, h);
-    const data = imgData.data;
-    const len = data.length;
-    const threshold = 0.03 + prngNext() * 0.02;
-    let modified = 0;
-    for (let i = 0; i < len; i += 4) {
-      if (prngNext() < threshold) {
-        const offset = prngNext() > 0.5 ? 1 : -1;
-        data[i] = Math.max(0, Math.min(255, data[i] + offset));
-        if (prngNext() < 0.3) data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + offset));
-        if (prngNext() < 0.2) data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + offset));
-        modified++;
+    if (!w || !h) return;
+    const shift = {
+      r: Math.floor(prngNext() * 10) - 5,
+      g: Math.floor(prngNext() * 10) - 5,
+      b: Math.floor(prngNext() * 10) - 5,
+      a: Math.floor(prngNext() * 10) - 5
+    };
+    const imageData = _origGetImageData.call(context, 0, 0, w, h);
+    for (let i = 0; i < h; i++) {
+      for (let j = 0; j < w; j++) {
+        const n = (i * (w * 4)) + (j * 4);
+        imageData.data[n + 0] = Math.min(255, Math.max(0, imageData.data[n + 0] + shift.r));
+        imageData.data[n + 1] = Math.min(255, Math.max(0, imageData.data[n + 1] + shift.g));
+        imageData.data[n + 2] = Math.min(255, Math.max(0, imageData.data[n + 2] + shift.b));
+        imageData.data[n + 3] = Math.min(255, Math.max(0, imageData.data[n + 3] + shift.a));
       }
     }
-    ctx.putImageData(imgData, 0, 0);
-    return modified;
+    context.putImageData(imageData, 0, 0);
   }
 
-  function getOffscreenCopy(canvas) {
-    const off = document.createElement('canvas');
-    off.width = canvas.width; off.height = canvas.height;
-    const octx = off.getContext('2d');
-    if (octx) octx.drawImage(canvas, 0, 0);
-    return { canvas: off, ctx: octx };
-  }
-
-  // Hook toDataURL IMMEDIATELY — runs before ANY page script
-  HTMLCanvasElement.prototype.toDataURL = function(...args) {
-    const ctx = this.getContext('2d');
-    if (ctx) {
-      const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
-      if (offCtx) applyCanvasNoise(offCtx, off);
-      return _origToDataURL.apply(off, args);
+  HTMLCanvasElement.prototype.toDataURL = new Proxy(HTMLCanvasElement.prototype.toDataURL, {
+    apply(target, self, args) {
+      console.log('[FPSync] toDataURL CALLED on', self.width, 'x', self.height, 'at', performance.now().toFixed(1), 'ms');
+      noisify(self, self.getContext('2d'));
+      return Reflect.apply(target, self, args);
     }
-    return _origToDataURL.apply(this, args);
-  };
+  });
 
-  // Hook toBlob IMMEDIATELY
-  HTMLCanvasElement.prototype.toBlob = function(callback, ...args) {
-    const ctx = this.getContext('2d');
-    if (ctx) {
-      const { canvas: off, ctx: offCtx } = getOffscreenCopy(this);
-      if (offCtx) applyCanvasNoise(offCtx, off);
-      return _origToBlob.apply(off, [callback, ...args]);
+  HTMLCanvasElement.prototype.toBlob = new Proxy(HTMLCanvasElement.prototype.toBlob, {
+    apply(target, self, args) {
+      noisify(self, self.getContext('2d'));
+      return Reflect.apply(target, self, args);
     }
-    return _origToBlob.apply(this, [callback, ...args]);
-  };
+  });
 
-  // Hook getImageData IMMEDIATELY
-  CanvasRenderingContext2D.prototype.getImageData = function(...args) {
-    const imgData = _origGetImageData.apply(this, args);
-    const data = imgData.data;
-    const len = data.length;
-    const threshold = 0.03 + prngNext() * 0.02;
-    for (let i = 0; i < len; i += 4) {
-      if (prngNext() < threshold) {
-        const offset = prngNext() > 0.5 ? 1 : -1;
-        data[i] = Math.max(0, Math.min(255, data[i] + offset));
-      }
+  CanvasRenderingContext2D.prototype.getImageData = new Proxy(CanvasRenderingContext2D.prototype.getImageData, {
+    apply(target, self, args) {
+      noisify(self.canvas, self);
+      return Reflect.apply(target, self, args);
     }
-    return imgData;
-  };
+  });
 
-  console.log('[FPSync v2.0.3] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
+  // Save original getContext for Phase 2 WebGL hooking
+  const _origGetContext = HTMLCanvasElement.prototype.getContext;
+
+  console.log('[FPSync v2.0.4] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
 
   // ═══════════════════════════════════════════════════════════════
-  // PHASE 2 — Profile-dependent hooks (installed AFTER profile arrives)
-  // These need profile data (UA, screen, GPU, etc.)
+  // PHASE 2 — Profile-dependent hooks
   // ═══════════════════════════════════════════════════════════════
   function installProfileHooks() {
     if (_profileHooksInstalled) return;
@@ -183,7 +150,6 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
     if (typeof _origNav.userAgentData !== 'undefined') {
       definePropOnChain(Navigator.prototype, 'userAgentData', () => profile.userAgentData);
     }
-    // Plugins/mimeTypes — empty (modern Chrome)
     definePropOnChain(Navigator.prototype, 'plugins', () => {
       const arr = Object.create(PluginArray.prototype);
       Object.defineProperty(arr, 'length', { value: 0, writable: false });
@@ -204,9 +170,6 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
     definePropOnChain(Screen.prototype, 'pixelDepth', () => profile.screen.colorDepth);
 
     // ── 3. WEBGL FINGERPRINT ──
-    // Note: getContext is already hooked by canvas phase. We hook it again here
-    // for WebGL-specific logic. Since it's a direct prototype assignment,
-    // this replaces the phase 1 hook.
     function hookWebGLGetParameter(gpu) {
       return function(pname) {
         switch (pname) {
@@ -296,11 +259,8 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
           get(target, prop) {
             if (prop === 'info') {
               return {
-                vendor: webgpu.vendor,
-                architecture: webgpu.architecture,
-                device: webgpu.device,
-                description: webgpu.description,
-                features: new Set(webgpu.features || []),
+                vendor: webgpu.vendor, architecture: webgpu.architecture, device: webgpu.device,
+                description: webgpu.description, features: new Set(webgpu.features || []),
                 limits: { maxTextureDimension1D: gpu.maxTextureSize, maxTextureDimension2D: gpu.maxTextureSize, maxTextureArrayLayers: 256, maxBindGroups: 4 },
               };
             }
@@ -408,15 +368,9 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
         Object.defineProperty(instance, 'onicecandidate', { configurable: true, get() { return null; }, set() {} });
         Object.defineProperty(instance, 'iceGatheringState', { configurable: true, get: () => 'new' });
         const origAddEventListener = instance.addEventListener.bind(instance);
-        instance.addEventListener = function(type, listener, ...args) {
-          if (BLOCKED_EVENTS.has(type)) return;
-          return origAddEventListener(type, listener, ...args);
-        };
+        instance.addEventListener = function(type, listener, ...args) { if (BLOCKED_EVENTS.has(type)) return; return origAddEventListener(type, listener, ...args); };
         const origRemoveEventListener = instance.removeEventListener.bind(instance);
-        instance.removeEventListener = function(type, listener, ...args) {
-          if (BLOCKED_EVENTS.has(type)) return;
-          return origRemoveEventListener(type, listener, ...args);
-        };
+        instance.removeEventListener = function(type, listener, ...args) { if (BLOCKED_EVENTS.has(type)) return; return origRemoveEventListener(type, listener, ...args); };
         try {
           const origLD = Object.getOwnPropertyDescriptor(OrigRTC.prototype, 'localDescription');
           if (origLD && origLD.get) {
@@ -467,7 +421,6 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
     const origFetch = window.fetch;
     window.fetch = function(input, init) {
       const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
-      
       if (fpSettings.localNetBlock && isLocalIP(url)) return Promise.reject(new TypeError('Failed to fetch'));
       return origFetch.call(this, input, init);
     };
@@ -529,8 +482,6 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
       if (navigator.registerProtocolHandler) navigator.registerProtocolHandler = function() {};
       if (navigator.isProtocolHandlerRegistered) navigator.isProtocolHandlerRegistered = function() { return false; };
     }
-
-    
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -544,18 +495,11 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
     installProfileHooks();
   }
 
-  // Check if data element already exists
   const existingEl = document.getElementById('__fpsync_data');
   if (existingEl) {
     if (existingEl.getAttribute('data-skip') === '1') return;
-    try {
-      const raw = existingEl.getAttribute('data-profile');
-      if (raw) profile = JSON.parse(decodeURIComponent(raw));
-    } catch (e) {}
-    try {
-      const rawS = existingEl.getAttribute('data-settings');
-      if (rawS) fpSettings = JSON.parse(decodeURIComponent(rawS));
-    } catch (e) {}
+    try { const raw = existingEl.getAttribute('data-profile'); if (raw) profile = JSON.parse(decodeURIComponent(raw)); } catch (e) {}
+    try { const rawS = existingEl.getAttribute('data-settings'); if (rawS) fpSettings = JSON.parse(decodeURIComponent(rawS)); } catch (e) {}
     existingEl.remove();
     if (profile) onProfileReady();
   } else {
@@ -564,14 +508,8 @@ console.log('[FPSync v2.0.3] page-context.js loaded at', performance.now().toFix
       if (!el) return;
       obs.disconnect();
       if (el.getAttribute('data-skip') === '1') return;
-      try {
-        const raw = el.getAttribute('data-profile');
-        if (raw) profile = JSON.parse(decodeURIComponent(raw));
-      } catch (e) {}
-      try {
-        const rawS = el.getAttribute('data-settings');
-        if (rawS) fpSettings = JSON.parse(decodeURIComponent(rawS));
-      } catch (e) {}
+      try { const raw = el.getAttribute('data-profile'); if (raw) profile = JSON.parse(decodeURIComponent(raw)); } catch (e) {}
+      try { const rawS = el.getAttribute('data-settings'); if (rawS) fpSettings = JSON.parse(decodeURIComponent(rawS)); } catch (e) {}
       el.remove();
       if (profile) onProfileReady();
     });
