@@ -1,5 +1,5 @@
 /**
- * FingerprintSync v2.0.5 — Canvas hooks (MAIN world, document_start)
+ * FingerprintSync v2.0.7 — Canvas hooks (MAIN world, document_start)
  * Exact Canvas Defender approach: Proxy + in-place pixel modification
  * + Sandboxed iframe bridge (Canvas Defender's second block)
  */
@@ -19,6 +19,20 @@ window.__fpsync_prng = (function() {
     getState: function() { return state; }
   };
 })();
+
+// ═══════════════════════════════════════════════════════════════
+// BLOCK 0 — getContext hook: suppress willReadFrequently warning
+// ═══════════════════════════════════════════════════════════════
+{
+  var _origGC = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function(type, ...args) {
+    if (type === '2d') {
+      if (!args[0] || typeof args[0] !== 'object') args[0] = { willReadFrequently: true };
+      else if (!args[0].willReadFrequently) args[0] = Object.assign({}, args[0], { willReadFrequently: true });
+    }
+    return _origGC.call(this, type, ...args);
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════
 // BLOCK 1 — Canvas hooks (exact Canvas Defender approach)

@@ -1,5 +1,5 @@
 /**
- * FingerprintSync v2.0.6 — MAIN world content script (Phase 2 only)
+ * FingerprintSync v2.0.7 — MAIN world content script (Phase 2 only)
  * Injected at document_start via manifest "world": "MAIN".
  *
  * Canvas hooks are in canvas-hooks.js (loaded BEFORE this file).
@@ -133,8 +133,34 @@
       try { Object.defineProperty(window, 'innerHeight', { configurable: true, get: function() { return _sIH; } }); } catch(e) {}
       try { Object.defineProperty(window, 'outerWidth',  { configurable: true, get: function() { return _sOW; } }); } catch(e) {}
       try { Object.defineProperty(window, 'outerHeight', { configurable: true, get: function() { return _sOH; } }); } catch(e) {}
-      console.log('[FPSync v2.0.6] Screen: inner', _sIW, 'x', _sIH, '| outer', _sOW, 'x', _sOH, '| chrome', _chromeW, 'x', _chromeH);
+      console.log('[FPSync v2.0.7] Screen: inner', _sIW, 'x', _sIH, '| outer', _sOW, 'x', _sOH, '| chrome', _chromeW, 'x', _chromeH);
     } catch(e) {}
+
+    // ── 2c. DOCUMENT ELEMENT DIMENSIONS + DPR ──
+    // document.documentElement.clientWidth/Height must match spoofed innerWidth/innerHeight
+    try {
+      var _elProto = Element.prototype;
+      var _cwDesc = Object.getOwnPropertyDescriptor(_elProto, 'clientWidth');
+      var _chDesc = Object.getOwnPropertyDescriptor(_elProto, 'clientHeight');
+      if (_cwDesc && _cwDesc.get && _cwDesc.configurable) {
+        var _origCWGet = _cwDesc.get;
+        Object.defineProperty(_elProto, 'clientWidth', {
+          configurable: true, enumerable: true,
+          get: function() { return (this === document.documentElement) ? _sIW : _origCWGet.call(this); }
+        });
+      }
+      if (_chDesc && _chDesc.get && _chDesc.configurable) {
+        var _origCHGet = _chDesc.get;
+        Object.defineProperty(_elProto, 'clientHeight', {
+          configurable: true, enumerable: true,
+          get: function() { return (this === document.documentElement) ? _sIH : _origCHGet.call(this); }
+        });
+      }
+      if (profile.screen.devicePixelRatio !== undefined) {
+        try { Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function() { return profile.screen.devicePixelRatio; } }); } catch(ede) {}
+      }
+      console.log('[FPSync v2.0.7] DocElement dims + DPR hook OK');
+    } catch(e) { console.warn('[FPSync v2.0.7] DocElement dims failed:', e); }
 
     // ── 3. WEBGL FINGERPRINT ──
     function hookWebGLGetParameter(gpu) {
@@ -256,10 +282,6 @@
       }
 
       // ── Proxy on Element.prototype.style ──
-      // This is the reliable approach: instead of trying to hook individual
-      // CSSStyleDeclaration property setters (which may not have configurable
-      // descriptors in Chrome's MAIN world), we Proxy the style accessor
-      // itself. Every elem.style.fontFamily = ... goes through our Proxy.
       try {
         var _targetProto = HTMLElement.prototype || Element.prototype;
         var _styleAccDesc = Object.getOwnPropertyDescriptor(_targetProto, 'style');
@@ -301,12 +323,12 @@
             },
             set: _styleAccDesc.set
           });
-          console.log('[FPSync v2.0.6] Font: Proxy on style installed OK');
+          console.log('[FPSync v2.0.7] Font: Proxy on style installed OK');
         } else {
-          console.warn('[FPSync v2.0.6] Font: No style accessor descriptor');
+          console.warn('[FPSync v2.0.7] Font: No style accessor descriptor');
         }
       } catch (e) {
-        console.warn('[FPSync v2.0.6] Font: Proxy install failed:', e);
+        console.warn('[FPSync v2.0.7] Font: Proxy install failed:', e);
       }
 
       // Also hook setAttribute('style', ...) — not covered by Proxy
@@ -327,14 +349,15 @@
     const origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
     Element.prototype.getBoundingClientRect = function() {
       const rect = origGetBoundingClientRect.call(this);
-      const noise = (prngNext() - 0.5) * 0.5;
-      return new DOMRect(rect.x + noise, rect.y + noise, rect.width, rect.height);
+      const nx = (prngNext() - 0.5) * 0.5;
+      const ny = (prngNext() - 0.5) * 0.5;
+      const nw = (prngNext() - 0.5) * 0.4;
+      const nh = (prngNext() - 0.5) * 0.4;
+      return new DOMRect(rect.x + nx, rect.y + ny, rect.width + nw, rect.height + nh);
     };
 
     // 6b. offsetWidth / offsetHeight noise (Font Fingerprint Defender approach)
     // Adds ±1 px noise to defeat font metrics & Unicode glyph fingerprinting.
-    // Uses deterministic PRNG so the noise is consistent within a session.
-    // ~42% of reads get ±1 noise, ~58% get no noise (same ratio as Font Defender).
     try {
       var _offsetProto = HTMLElement.prototype;
       var _owDesc = Object.getOwnPropertyDescriptor(_offsetProto, 'offsetWidth');
@@ -365,9 +388,9 @@
           }
         });
       }
-      console.log('[FPSync v2.0.6] Offset noise installed (ow:', !!_owDesc, 'oh:', !!_ohDesc, ')');
+      console.log('[FPSync v2.0.7] Offset noise installed (ow:', !!_owDesc, 'oh:', !!_ohDesc, ')');
     } catch(e) {
-      console.warn('[FPSync v2.0.6] Offset noise failed:', e);
+      console.warn('[FPSync v2.0.7] Offset noise failed:', e);
     }
 
     // ── 7. WEBGPU ──
@@ -399,37 +422,145 @@
       };
     }
 
-    // ── 8. TIMEZONE ──
+    // ── 8. TIMEZONE (Intl.DateTimeFormat) ──
+    // Fixed: sets timeZone OPTION (not locale) so formatting actually uses spoofed TZ
     try {
-      const origDateTimeFormat = Intl.DateTimeFormat;
+      var origDateTimeFormat = Intl.DateTimeFormat;
+      var _origDTFSupportedLocalesOf = origDateTimeFormat.supportedLocalesOf;
       Intl.DateTimeFormat = function(...args) {
-        if (args.length === 0 || (args.length === 1 && typeof args[0] === 'string' && !args[0].includes('/'))) {
-          args[0] = profile.timezone;
-        }
-        return new origDateTimeFormat(...args);
+        if (!args[1] || typeof args[1] !== 'object') args[1] = {};
+        if (!args[1].timeZone) args[1].timeZone = profile.timezone;
+        return new origDateTimeFormat(args[0], args[1]);
       };
-      const origSV = Intl.DateTimeFormat.supportedValuesOf;
-      Object.defineProperty(Intl.DateTimeFormat, 'supportedValuesOf', {
-        configurable: true,
-        value: function(key) {
-          if (key === 'timeZone') {
-            const all = origSV.call(this, key);
-            if (!all.includes(profile.timezone)) return [...all, profile.timezone];
-            return all;
-          }
-          return origSV.call(this, key);
-        },
-      });
+      Intl.DateTimeFormat.prototype = origDateTimeFormat.prototype;
+      if (_origDTFSupportedLocalesOf) Intl.DateTimeFormat.supportedLocalesOf = _origDTFSupportedLocalesOf;
+      if (origDateTimeFormat.supportedValuesOf) {
+        var origSV = origDateTimeFormat.supportedValuesOf;
+        Object.defineProperty(Intl.DateTimeFormat, 'supportedValuesOf', {
+          configurable: true,
+          value: function(key) {
+            if (key === 'timeZone') {
+              var all = origSV.call(origDateTimeFormat, key);
+              if (!all.includes(profile.timezone)) return all.concat([profile.timezone]);
+              return all;
+            }
+            return origSV.call(origDateTimeFormat, key);
+          },
+        });
+      }
     } catch (e) {}
+
+    // ── 8b. DATE/TIME SYNCHRONIZATION ──
+    // Shifts Date so that local-time methods (getHours etc.) show spoofed TZ time.
+    // Also hooks toString/toTimeString to replace timezone name.
+    // Compensates Intl.DateTimeFormat.format() for shifted Dates.
+    try {
+      var _realTzOff = new Date().getTimezoneOffset(); // minutes west of UTC
+      // Compute spoofed timezone offset via Intl
+      var _tzProbe = new Date();
+      var _tzParts = new origDateTimeFormat('en-US', {
+        timeZone: profile.timezone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false
+      }).formatToParts(_tzProbe);
+      var _getP = function(t) { var p = _tzParts.find(function(x) { return x.type === t; }); return p ? parseInt(p.value) : 0; };
+      var _sy = _getP('year'), _sm = _getP('month') - 1, _sd = _getP('day');
+      var _sh = _getP('hour'), _smin = _getP('minute'), _ss = _getP('second');
+      if (_sh === 24) _sh = 0;
+      var _spoofedAsUTC = Date.UTC(_sy, _sm, _sd, _sh, _smin, _ss);
+      var _realAsUTC = Date.UTC(_tzProbe.getUTCFullYear(), _tzProbe.getUTCMonth(), _tzProbe.getUTCDate(),
+                                  _tzProbe.getUTCHours(), _tzProbe.getUTCMinutes(), _tzProbe.getUTCSeconds());
+      var _tzDiffMs = _spoofedAsUTC - _realAsUTC;
+      if (_tzDiffMs > 43200000) _tzDiffMs -= 86400000;
+      if (_tzDiffMs < -43200000) _tzDiffMs += 86400000;
+      // _tzDiffMs = spoofed TZ offset from UTC in ms (positive = east)
+      var _spoofedTzOff = -Math.round(_tzDiffMs / 60000); // minutes west of UTC (getTimezoneOffset convention)
+      // Shift to apply to Date internal time
+      var _dateShift = (_realTzOff - _spoofedTzOff) * 60000;
+      // Timezone abbreviation
+      var _tzAbbrParts = new origDateTimeFormat('en-US', { timeZone: profile.timezone, timeZoneName: 'short' }).formatToParts(new Date());
+      var _tzAbbr = ((_tzAbbrParts.find(function(p) { return p.type === 'timeZoneName'; })) || {}).value || '';
+      // GMT offset string like "GMT+0200"
+      var _eastMin = -_spoofedTzOff;
+      var _gmSign = _eastMin >= 0 ? '+' : '-';
+      var _absEast = Math.abs(_eastMin);
+      var _gmStr = 'GMT' + _gmSign + String(Math.floor(_absEast / 60)).padStart(2, '0') + String(_absEast % 60).padStart(2, '0');
+
+      // Save original Date methods
+      var _OrigDate = Date;
+      var _origDateNow = _OrigDate.now;
+      var _origDProtoToStr = _OrigDate.prototype.toString;
+      var _origDProtoToTimeStr = _OrigDate.prototype.toTimeString;
+      var _tzRe = /GMT[+-]\d{4}\s*\([^)]*\)/;
+
+      // Replace Date constructor via Proxy
+      window.Date = new Proxy(_OrigDate, {
+        construct: function(target, args) {
+          if (args.length === 0) return new target(_origDateNow() + _dateShift);
+          return new target(...args);
+        },
+        apply: function(target, thisArg, args) {
+          var d = new _OrigDate(_origDateNow() + _dateShift);
+ return _origDProtoToStr.call(d).replace(_tzRe, _gmStr + ' (' + _tzAbbr + ')');
+        }
+      });
+      window.Date.now = function() { return _origDateNow() + _dateShift; };
+      window.Date.parse = _OrigDate.parse;
+      window.Date.UTC = _OrigDate.UTC;
+      window.Date.prototype = _OrigDate.prototype;
+
+      // Hook getTimezoneOffset
+      _OrigDate.prototype.getTimezoneOffset = function() { return _spoofedTzOff; };
+      // Hook toString / toTimeString — replace TZ name/offset
+      _OrigDate.prototype.toString = function() {
+        return _origDProtoToStr.call(this).replace(_tzRe, _gmStr + ' (' + _tzAbbr + ')');
+      };
+      _OrigDate.prototype.toTimeString = function() {
+        return _origDProtoToTimeStr.call(this).replace(_tzRe, _gmStr + ' (' + _tzAbbr + ')');
+      };
+
+      // Hook Intl.DateTimeFormat.prototype.format/formatToParts to unshift Date
+      // (Doubles are shifted so local methods show spoofed time; but Intl
+      //  formatters apply spoofed TZ themselves → would double-shift)
+      try {
+        var _origFmt = origDateTimeFormat.prototype.format;
+        var _origFmtParts = origDateTimeFormat.prototype.formatToParts;
+        origDateTimeFormat.prototype.format = function(date) {
+          if (date instanceof Date) date = new _OrigDate(date.getTime() - _dateShift);
+          return _origFmt.call(this, date);
+        };
+        origDateTimeFormat.prototype.formatToParts = function(date) {
+          if (date instanceof Date) date = new _OrigDate(date.getTime() - _dateShift);
+          return _origFmtParts.call(this, date);
+        };
+        if (origDateTimeFormat.prototype.formatRange) {
+          var _origFmtRange = origDateTimeFormat.prototype.formatRange;
+          origDateTimeFormat.prototype.formatRange = function(s, e) {
+            if (s instanceof Date) s = new _OrigDate(s.getTime() - _dateShift);
+            if (e instanceof Date) e = new _OrigDate(e.getTime() - _dateShift);
+            return _origFmtRange.call(this, s, e);
+          };
+        }
+      } catch(ef) {}
+
+      console.log('[FPSync v2.0.7] Date/Time: shift=' + _dateShift + 'ms TZ=' + profile.timezone + ' ' + _gmStr + ' (' + _tzAbbr + ')');
+    } catch(e) { console.warn('[FPSync v2.0.7] Date/Time failed:', e); }
 
     // ── 9. GEOLOCATION ──
     const TZ_COORDS = {
       'America/New_York': { lat: 40.7128, lng: -74.006 }, 'America/Chicago': { lat: 41.8781, lng: -87.6298 },
       'America/Denver': { lat: 39.7392, lng: -104.9903 }, 'America/Los_Angeles': { lat: 34.0522, lng: -118.2437 },
+      'America/Anchorage': { lat: 61.2181, lng: -149.9003 }, 'America/Sao_Paulo': { lat: -23.5505, lng: -46.6333 },
       'Europe/London': { lat: 51.5074, lng: -0.1278 }, 'Europe/Paris': { lat: 48.8566, lng: 2.3522 },
       'Europe/Berlin': { lat: 52.52, lng: 13.405 }, 'Europe/Moscow': { lat: 55.7558, lng: 37.6173 },
+      'Europe/Amsterdam': { lat: 52.3676, lng: 4.9041 }, 'Europe/Madrid': { lat: 40.4168, lng: -3.7038 },
+      'Europe/Rome': { lat: 41.9028, lng: 12.4964 }, 'Europe/Istanbul': { lat: 41.0082, lng: 28.9784 },
+      'Europe/Warsaw': { lat: 52.2297, lng: 21.0122 },
       'Asia/Tokyo': { lat: 35.6762, lng: 139.65 }, 'Asia/Shanghai': { lat: 31.2304, lng: 121.4737 },
-      'Australia/Sydney': { lat: -33.8688, lng: 151.2093 },
+      'Asia/Kolkata': { lat: 19.076, lng: 72.8777 }, 'Asia/Dubai': { lat: 25.2048, lng: 55.2708 },
+      'Asia/Seoul': { lat: 37.5665, lng: 126.978 }, 'Asia/Singapore': { lat: 1.3521, lng: 103.8198 },
+      'Australia/Sydney': { lat: -33.8688, lng: 151.2093 }, 'Pacific/Auckland': { lat: -36.8485, lng: 174.7633 },
     };
     const gc = TZ_COORDS[profile.timezone] || TZ_COORDS['America/New_York'];
     const makePos = () => ({
@@ -464,6 +595,7 @@
         mql.addListener = r.addListener ? r.addListener.bind(r) : undefined;
         mql.removeListener = r.removeListener ? r.removeListener.bind(r) : undefined;
         mql.dispatchEvent = r.dispatchEvent.bind(r);
+        mql.onchange = null;
         return mql;
       }
       return r;
@@ -620,7 +752,7 @@
     _prngState = profile.seed | 0;
     // Re-seed the global PRNG used by canvas-hooks.js so canvas noise is deterministic
     if (_globalPrng) _globalPrng.setSeed(profile.seed | 0);
-    console.log('[FPSync v2.0.6] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms');
+    console.log('[FPSync v2.0.7] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms');
     installProfileHooks();
   }
 
