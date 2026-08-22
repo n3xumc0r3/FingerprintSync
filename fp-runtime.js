@@ -590,7 +590,7 @@
     // ── 10. MATCH MEDIA / PREFERENCES ──
     // v2.0.9: Also intercept device-width/device-height media queries to prevent CSS leak
     const origMatchMedia = window.matchMedia;
-    const _sw = profile.screen.width, _sh = profile.screen.height;
+    const _sw = profile.screen.width, _sH = profile.screen.height;
     const _dwRe = /(?:min|max)-device-width\s*:\s*(\d+)/;
     const _dhRe = /(?:min|max)-device-height\s*:\s*(\d+)/;
     window.matchMedia = function(q) {
@@ -600,7 +600,7 @@
         return m.replace(String(val), String(_sw));
       });
       rewritten = rewritten.replace(_dhRe, function(m, val) {
-        return m.replace(String(val), String(_sh));
+        return m.replace(String(val), String(_sH));
       });
       const r = origMatchMedia.call(this, rewritten);
       if (q === '(prefers-color-scheme: dark)') {
@@ -686,6 +686,7 @@
     // custom scheme — current or future.
     const SAFE_PROTOCOLS = new Set([
       'http','https','about','javascript','data','blob','file',
+      'ws','wss','chrome','chrome-extension','chrome-untrusted','devtools',
     ]);
     const _protoRe = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
     const isBlockedProtocol = function(url) {
