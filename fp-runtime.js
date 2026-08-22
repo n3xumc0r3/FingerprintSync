@@ -322,13 +322,53 @@
 
     }
 
-    // ── 6. CLIENTRECTS NOISE ──
+    // ── 6. CLIENTRECTS + OFFSET NOISE ──
+    // 6a. getBoundingClientRect noise (sub-pixel, non-breaking)
     const origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
     Element.prototype.getBoundingClientRect = function() {
       const rect = origGetBoundingClientRect.call(this);
       const noise = (prngNext() - 0.5) * 0.5;
       return new DOMRect(rect.x + noise, rect.y + noise, rect.width, rect.height);
     };
+
+    // 6b. offsetWidth / offsetHeight noise (Font Fingerprint Defender approach)
+    // Adds ±1 px noise to defeat font metrics & Unicode glyph fingerprinting.
+    // Uses deterministic PRNG so the noise is consistent within a session.
+    // ~42% of reads get ±1 noise, ~58% get no noise (same ratio as Font Defender).
+    try {
+      var _offsetProto = HTMLElement.prototype;
+      var _owDesc = Object.getOwnPropertyDescriptor(_offsetProto, 'offsetWidth');
+      var _ohDesc = Object.getOwnPropertyDescriptor(_offsetProto, 'offsetHeight');
+      if (_owDesc && _owDesc.get) {
+        var _origOWGet = _owDesc.get;
+        Object.defineProperty(_offsetProto, 'offsetWidth', {
+          configurable: true, enumerable: true,
+          get: function() {
+            var w = _origOWGet.call(this);
+            var r = prngNext();
+            if (r < 0.29) return Math.max(0, w + 1);
+            if (r < 0.58) return Math.max(0, w - 1);
+            return Math.max(0, w);
+          }
+        });
+      }
+      if (_ohDesc && _ohDesc.get) {
+        var _origOHGet = _ohDesc.get;
+        Object.defineProperty(_offsetProto, 'offsetHeight', {
+          configurable: true, enumerable: true,
+          get: function() {
+            var h = _origOHGet.call(this);
+            var r = prngNext();
+            if (r < 0.29) return Math.max(0, h + 1);
+            if (r < 0.58) return Math.max(0, h - 1);
+            return Math.max(0, h);
+          }
+        });
+      }
+      console.log('[FPSync v2.0.6] Offset noise installed (ow:', !!_owDesc, 'oh:', !!_ohDesc, ')');
+    } catch(e) {
+      console.warn('[FPSync v2.0.6] Offset noise failed:', e);
+    }
 
     // ── 7. WEBGPU ──
     if (navigator.gpu) {
