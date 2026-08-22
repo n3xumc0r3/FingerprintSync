@@ -181,154 +181,121 @@
     }
 
     // 5b. DOM-based font detection (offsetWidth/offsetHeight fallback method)
-    // browserleaks.com/fonts and similar fingerprinters create a <span>,
-    // set fontFamily to a candidate name, and compare offsetWidth/offsetHeight
-    // against a bogus-font baseline. We intercept CSSStyleDeclaration to
-    // redirect non-profile fonts to a fake name, making them fall through
-    // to the same fallback → identical metrics → "not detected".
+    // browserleaks.com/fonts creates a <span>, sets fontFamily to a candidate name,
+    // and compares offsetWidth/offsetHeight against a bogus-font baseline.
+    // We Proxy the Element.prototype.style accessor so that fontFamily assignments
+    // for non-profile fonts get replaced with a nonexistent name → same fallback
+    // metrics → fingerprinter concludes "font not installed".
     if (profile.fonts && profile.fonts.length) {
       const _fontSet = new Set(profile.fonts.map(function(f) { return f.toLowerCase(); }));
+      var _FAKE_FONT = '__fpsync_no_font_7x3k9__';
+      var _GENERICS = new Set([
+        'sans-serif','serif','monospace','cursive','fantasy','system-ui',
+        'ui-serif','ui-sans-serif','ui-monospace','ui-rounded',
+        'emoji','math','fangsong','inherit','initial','default'
+      ]);
 
-      // Parse font shorthand: extract family names from CSS font value
-      // e.g. '16px "Arial", Helvetica, sans-serif' → ['Arial', 'Helvetica', 'sans-serif']
+      // Parse comma-separated font names from a CSS font-family value
       function extractFontNames(cssValue) {
         if (typeof cssValue !== 'string') return [];
-        var names = [];
-        var current = '';
-        var inQuote = false;
-        var quoteChar = '';
+        var names = [], current = '', inQuote = false, quoteChar = '';
         for (var i = 0; i < cssValue.length; i++) {
           var ch = cssValue[i];
           if (inQuote) {
-            if (ch === quoteChar) { inQuote = false; }
-            else { current += ch; }
+            if (ch === quoteChar) inQuote = false;
+            else current += ch;
           } else if (ch === '"' || ch === "'") {
-            inQuote = true;
-            quoteChar = ch;
+            inQuote = true; quoteChar = ch;
           } else if (ch === ',') {
-            var trimmed = current.trim();
-            if (trimmed) names.push(trimmed);
-            current = '';
+            var t = current.trim(); if (t) names.push(t); current = '';
           } else {
             current += ch;
           }
         }
-        var last = current.trim();
-        if (last) names.push(last);
+        var last = current.trim(); if (last) names.push(last);
         return names;
       }
 
-      // A guaranteed-nonexistent font name. Both the fingerprinter's bogus
-      // baseline font and any non-profile font get replaced with this, so they
-      // all resolve to the same browser default fallback → identical metrics.
-      var _FAKE_FONT = '__fpsync_no_font_7x3k9__';
-
+      // Filter font-family value: keep only profile fonts + generics
       function filterFontValue(cssValue) {
         var names = extractFontNames(cssValue);
         if (names.length === 0) return cssValue;
         var filtered = [];
         for (var i = 0; i < names.length; i++) {
-          var n = names[i].trim();
-          var lower = n.toLowerCase();
-          // Always pass through generic families (they always resolve to something)
-          if (lower === 'sans-serif' || lower === 'serif' || lower === 'monospace' ||
-              lower === 'cursive' || lower === 'fantasy' || lower === 'system-ui' ||
-              lower === 'ui-serif' || lower === 'ui-sans-serif' || lower === 'ui-monospace' ||
-              lower === 'ui-rounded' || lower === 'emoji' || lower === 'math' ||
-              lower === 'fangsong' || lower === 'inherit' || lower === 'initial' ||
-              lower === 'default') {
-            filtered.push(n);
-          } else if (_fontSet.has(lower)) {
-            filtered.push(n);
-          }
-          // else: font not in profile → skip it
+          var n = names[i].trim(), lower = n.toLowerCase();
+          if (_GENERICS.has(lower) || _fontSet.has(lower)) filtered.push(n);
         }
-        if (filtered.length === 0) {
-          // All fonts filtered out → replace with nonexistent font.
-          // This makes the element fall back to the same default as the
-          // fingerprinter's bogus baseline font → identical offsetWidth/offsetHeight
-          // → fingerprinter concludes "font not installed".
-          return _FAKE_FONT;
-        }
-        // Preserve quoting
+        if (filtered.length === 0) return _FAKE_FONT;
         return filtered.map(function(name) {
           if (name.indexOf(' ') > -1 && name[0] !== '"' && name[0] !== "'") return '"' + name + '"';
           return name;
         }).join(', ');
       }
 
-      // 5b-i. Hook CSSStyleDeclaration.prototype.setProperty
-      var origSetProperty = CSSStyleDeclaration.prototype.setProperty;
-      CSSStyleDeclaration.prototype.setProperty = function(propName, value, priority) {
-        if (propName && propName.toLowerCase() === 'font-family' && typeof value === 'string') {
-          // Check if this looks like a font fingerprinting call
-          // (setting fontFamily to specific test names)
-          var filtered = filterFontValue(value);
-          if (filtered !== value) {
-            return origSetProperty.call(this, propName, filtered, priority);
-          }
-        }
-        return origSetProperty.call(this, propName, value, priority);
-      };
-
-      // 5b-ii. Hook CSSStyleDeclaration font-family setter (elem.style.fontFamily = ...)
+      // ── Proxy on Element.prototype.style ──
+      // This is the reliable approach: instead of trying to hook individual
+      // CSSStyleDeclaration property setters (which may not have configurable
+      // descriptors in Chrome's MAIN world), we Proxy the style accessor
+      // itself. Every elem.style.fontFamily = ... goes through our Proxy.
       try {
-        var styleProto = CSSStyleDeclaration.prototype;
-        var _origStyleDesc = Object.getOwnPropertyDescriptor(styleProto, 'fontFamily');
-        if (_origStyleDesc && _origStyleDesc.set) {
-          var _origFontFamilySet = _origStyleDesc.set;
-          Object.defineProperty(styleProto, 'fontFamily', {
-            configurable: true,
-            enumerable: true,
-            get: _origStyleDesc.get,
-            set: function(value) {
-              if (typeof value === 'string') {
-                var filtered = filterFontValue(value);
-                if (filtered !== value) {
-                  return _origFontFamilySet.call(this, filtered);
+        var _targetProto = HTMLElement.prototype || Element.prototype;
+        var _styleAccDesc = Object.getOwnPropertyDescriptor(_targetProto, 'style');
+        if (!_styleAccDesc) _styleAccDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'style');
+        if (_styleAccDesc && _styleAccDesc.get) {
+          var _origStyleGet = _styleAccDesc.get;
+          var _proxyCache = new WeakMap();
+          Object.defineProperty(_targetProto, 'style', {
+            configurable: true, enumerable: true,
+            get: function() {
+              var real = _origStyleGet.call(this);
+              if (!real) return real;
+              if (_proxyCache.has(real)) return _proxyCache.get(real);
+              var proxy = new Proxy(real, {
+                set: function(target, prop, value) {
+                  if (prop === 'fontFamily' && typeof value === 'string') {
+                    value = filterFontValue(value);
+                  }
+                  target[prop] = value;
+                  return true;
+                },
+                get: function(target, prop) {
+                  if (prop === 'setProperty') {
+                    return function(name, value, priority) {
+                      if (typeof name === 'string' && name.toLowerCase() === 'font-family' && typeof value === 'string') {
+                        value = filterFontValue(value);
+                      }
+                      return target.setProperty.call(target, name, value, priority);
+                    };
+                  }
+                  if (prop === '__fpsync_fp') return true;
+                  var val = target[prop];
+                  if (typeof val === 'function') return val.bind(target);
+                  return val;
                 }
-              }
-              return _origFontFamilySet.call(this, value);
+              });
+              _proxyCache.set(real, proxy);
+              return proxy;
             },
+            set: _styleAccDesc.set
           });
+          console.log('[FPSync v2.0.6] Font: Proxy on style installed OK');
+        } else {
+          console.warn('[FPSync v2.0.6] Font: No style accessor descriptor');
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn('[FPSync v2.0.6] Font: Proxy install failed:', e);
+      }
 
-      // 5b-iii. Also intercept via attribute setter: elem.setAttribute('style', ...)
-      // which may contain font-family in the CSS string
+      // Also hook setAttribute('style', ...) — not covered by Proxy
       var origSetAttribute = Element.prototype.setAttribute;
       Element.prototype.setAttribute = function(name, value) {
         if (name && name.toLowerCase() === 'style' && typeof value === 'string' && value.toLowerCase().includes('font-family')) {
-          // Parse and filter font-family within the style string
           value = value.replace(/font-family\s*:\s*([^;"']+|"[^"]*"|'[^']*')/gi, function(match, fontVal) {
-            var filtered = filterFontValue(fontVal);
-            return 'font-family: ' + filtered;
+            return 'font-family: ' + filterFontValue(fontVal);
           });
         }
         return origSetAttribute.call(this, name, value);
       };
-
-      // 5b-iv. Hook inline style property assignment for cssText
-      try {
-        var cssTextDesc = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, 'cssText');
-        if (cssTextDesc && cssTextDesc.set) {
-          var origCssTextSet = cssTextDesc.set;
-          Object.defineProperty(CSSStyleDeclaration.prototype, 'cssText', {
-            configurable: true,
-            enumerable: true,
-            get: cssTextDesc.get,
-            set: function(value) {
-              if (typeof value === 'string' && value.toLowerCase().includes('font-family')) {
-                value = value.replace(/font-family\s*:\s*([^;"']+|"[^"]*"|'[^']*')/gi, function(match, fontVal) {
-                  var filtered = filterFontValue(fontVal);
-                  return 'font-family: ' + filtered;
-                });
-              }
-              return origCssTextSet.call(this, value);
-            },
-          });
-        }
-      } catch (e) {}
 
     }
 
