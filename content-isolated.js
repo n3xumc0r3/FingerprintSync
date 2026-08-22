@@ -1,14 +1,31 @@
 /**
- * FingerprintSync — ISOLATED world content script
+ * FingerprintSync v2.0.5 — ISOLATED world content script
  * Runs at document_start (manifest-declared, guaranteed).
  *
- * content-main.js is injected into MAIN world via
- * chrome.scripting.registerContentScripts (set up in background.js).
- * This script ONLY handles profile delivery via DOM element.
+ * 1. Sandboxed iframe bridge: notifies parent to copy canvas hooks
+ *    into sandboxed iframes (where MAIN world scripts can't run).
+ * 2. Profile delivery via DOM element for page-context.js.
  */
 
 (function FingerprintSyncIsolated() {
   'use strict';
+
+  // ═══════════════════════════════════════════════════════════════
+  // SANDBOXED IFRAME BRIDGE (Canvas Defender approach)
+  // In sandboxed iframes without allow-scripts, MAIN world scripts
+  // can't execute. Our ISOLATED script still runs here and notifies
+  // the parent frame to copy canvas hooks into this iframe's globals.
+  // ═══════════════════════════════════════════════════════════════
+  var _sandboxedKey = '__fpsync_sandboxed';
+  try {
+    if (document.documentElement.getAttribute(_sandboxedKey) === null) {
+      // MAIN world script didn't run here → we're in a sandboxed iframe
+      parent.postMessage(_sandboxedKey, '*');
+      try { window.top.postMessage(_sandboxedKey, '*'); } catch (e) {}
+    } else {
+      document.documentElement.removeAttribute(_sandboxedKey);
+    }
+  } catch (e) {}
 
   // Prevent double injection
   const MARKER = '__fpsync_isolated';

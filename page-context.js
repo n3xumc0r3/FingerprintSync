@@ -1,13 +1,10 @@
 /**
- * FingerprintSync v2.0.4 — MAIN world content script
+ * FingerprintSync v2.0.5 — MAIN world content script (Phase 2 only)
  * Injected at document_start via manifest "world": "MAIN".
  *
- * Phase 1 (IMMEDIATE): Canvas hooks — exact Canvas Defender approach
- *   Proxy + in-place pixel modification + Reflect.apply
- * Phase 2 (after profile): Navigator/Screen/WebGL/Audio/etc.
+ * Canvas hooks are in canvas-hooks.js (loaded BEFORE this file).
+ * This file handles Phase 2: Navigator/Screen/WebGL/Audio/etc. + re-seeds PRNG.
  */
-
-console.log('[FPSync v2.0.4] page-context.js loaded at', performance.now().toFixed(1), 'ms');
 
 (function FingerprintSyncMain() {
   // Prevent double-injection
@@ -18,7 +15,9 @@ console.log('[FPSync v2.0.4] page-context.js loaded at', performance.now().toFix
 
   // ─── Profile state ───
   let profile = null;
-  let _prngState = (crypto.getRandomValues(new Uint32Array(1))[0]) | 1;
+  // Use the global PRNG from canvas-hooks.js for Phase 2 consistency
+  const _globalPrng = window.__fpsync_prng;
+  let _prngState = _globalPrng ? _globalPrng.getState() : ((crypto.getRandomValues(new Uint32Array(1))[0]) | 1);
   let fpSettings = { webrtcBlock: true, localNetBlock: true, protocolBlock: true, linkCleaner: { enabled: true, aggressive: false, customParams: '', customPrefixes: '' } };
   let _ready = false;
   let _profileHooksInstalled = false;
@@ -53,63 +52,8 @@ console.log('[FPSync v2.0.4] page-context.js loaded at', performance.now().toFix
     return false;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // PHASE 1 — Canvas hooks (exact Canvas Defender approach)
-  // Proxy + in-place noisify + Reflect.apply
-  // ═══════════════════════════════════════════════════════════════
-
-  const _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-
-  function noisify(canvas, context) {
-    if (!context) return;
-    const w = canvas.width;
-    const h = canvas.height;
-    if (!w || !h) return;
-    const shift = {
-      r: Math.floor(prngNext() * 10) - 5,
-      g: Math.floor(prngNext() * 10) - 5,
-      b: Math.floor(prngNext() * 10) - 5,
-      a: Math.floor(prngNext() * 10) - 5
-    };
-    const imageData = _origGetImageData.call(context, 0, 0, w, h);
-    for (let i = 0; i < h; i++) {
-      for (let j = 0; j < w; j++) {
-        const n = (i * (w * 4)) + (j * 4);
-        imageData.data[n + 0] = Math.min(255, Math.max(0, imageData.data[n + 0] + shift.r));
-        imageData.data[n + 1] = Math.min(255, Math.max(0, imageData.data[n + 1] + shift.g));
-        imageData.data[n + 2] = Math.min(255, Math.max(0, imageData.data[n + 2] + shift.b));
-        imageData.data[n + 3] = Math.min(255, Math.max(0, imageData.data[n + 3] + shift.a));
-      }
-    }
-    context.putImageData(imageData, 0, 0);
-  }
-
-  HTMLCanvasElement.prototype.toDataURL = new Proxy(HTMLCanvasElement.prototype.toDataURL, {
-    apply(target, self, args) {
-      console.log('[FPSync] toDataURL CALLED on', self.width, 'x', self.height, 'at', performance.now().toFixed(1), 'ms');
-      noisify(self, self.getContext('2d'));
-      return Reflect.apply(target, self, args);
-    }
-  });
-
-  HTMLCanvasElement.prototype.toBlob = new Proxy(HTMLCanvasElement.prototype.toBlob, {
-    apply(target, self, args) {
-      noisify(self, self.getContext('2d'));
-      return Reflect.apply(target, self, args);
-    }
-  });
-
-  CanvasRenderingContext2D.prototype.getImageData = new Proxy(CanvasRenderingContext2D.prototype.getImageData, {
-    apply(target, self, args) {
-      noisify(self.canvas, self);
-      return Reflect.apply(target, self, args);
-    }
-  });
-
   // Save original getContext for Phase 2 WebGL hooking
   const _origGetContext = HTMLCanvasElement.prototype.getContext;
-
-  console.log('[FPSync v2.0.4] Phase 1: Canvas hooks active at', performance.now().toFixed(1), 'ms, seed:', _prngState);
 
   // ═══════════════════════════════════════════════════════════════
   // PHASE 2 — Profile-dependent hooks
@@ -491,7 +435,9 @@ console.log('[FPSync v2.0.4] page-context.js loaded at', performance.now().toFix
     if (_ready) return;
     _ready = true;
     _prngState = profile.seed | 0;
-    console.log('[FPSync] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms');
+    // Re-seed the global PRNG used by canvas-hooks.js so canvas noise is deterministic
+    if (_globalPrng) _globalPrng.setSeed(profile.seed | 0);
+    console.log('[FPSync v2.0.5] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms');
     installProfileHooks();
   }
 
