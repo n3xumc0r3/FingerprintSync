@@ -113,6 +113,29 @@
     definePropOnChain(Screen.prototype, 'colorDepth', () => profile.screen.colorDepth);
     definePropOnChain(Screen.prototype, 'pixelDepth', () => profile.screen.colorDepth);
 
+    // ── 2b. WINDOW DIMENSION CONSISTENCY ──
+    // Prevent detection via impossible geometry: screen.width < window.innerWidth.
+    // Compute spoofed window dimensions from profile screen + real chrome deltas.
+    try {
+      var _realOW = window.outerWidth, _realOH = window.outerHeight;
+      var _realIW = window.innerWidth, _realIH = window.innerHeight;
+      var _chromeW = _realOW - _realIW;
+      var _chromeH = _realOH - _realIH;
+      // Spoofed outer = screen available (simulates maximized window)
+      var _sOW = profile.screen.availWidth || profile.screen.width;
+      var _sOH = profile.screen.availHeight || profile.screen.height;
+      var _sIW = Math.max(200, _sOW - _chromeW);
+      var _sIH = Math.max(200, _sOH - _chromeH);
+      // Safety: inner must not exceed screen
+      if (_sIW >= profile.screen.width) _sIW = profile.screen.width - 1;
+      if (_sIH >= profile.screen.height) _sIH = profile.screen.height - 1;
+      try { Object.defineProperty(window, 'innerWidth',  { configurable: true, get: function() { return _sIW; } }); } catch(e) {}
+      try { Object.defineProperty(window, 'innerHeight', { configurable: true, get: function() { return _sIH; } }); } catch(e) {}
+      try { Object.defineProperty(window, 'outerWidth',  { configurable: true, get: function() { return _sOW; } }); } catch(e) {}
+      try { Object.defineProperty(window, 'outerHeight', { configurable: true, get: function() { return _sOH; } }); } catch(e) {}
+      console.log('[FPSync v2.0.6] Screen: inner', _sIW, 'x', _sIH, '| outer', _sOW, 'x', _sOH, '| chrome', _chromeW, 'x', _chromeH);
+    } catch(e) {}
+
     // ── 3. WEBGL FINGERPRINT ──
     function hookWebGLGetParameter(gpu) {
       return function(pname) {
