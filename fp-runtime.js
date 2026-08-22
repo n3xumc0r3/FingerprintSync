@@ -1,13 +1,13 @@
 /**
- * FingerprintSync v2.0.8 — MAIN world content script (Phase 2 only)
+ * FingerprintSync v2.0.9 — MAIN world content script (Phase 2 only)
  * Injected at document_start via manifest "world": "MAIN".
  *
  * Canvas hooks are in canvas-hooks.js (loaded BEFORE this file).
  * This file handles Phase 2: Navigator/Screen/WebGL/Audio/etc. + re-seeds PRNG.
  *
- * v2.0.8: IFRAME FIX — chrome.storage.local fallback for profile loading,
- *   extended MutationObserver timeout, multiple profile delivery paths.
- *   Also fixes: DateTimeFormat locale, DNT sync, Client Hints Viewport/Memory/DPR.
+ * v2.0.9: Canvas hooks now non-destructive (temp canvas approach).
+ *   Removed willReadFrequently forcing that broke canvas games.
+ *   v2.0.9: IFRAME FIX, Client Hints, DNT, DateTimeFormat locale, CSS MQ, WebGPU.
  */
 
 (function FingerprintSyncMain() {
@@ -137,7 +137,7 @@
       try { Object.defineProperty(window, 'innerHeight', { configurable: true, get: function() { return _sIH; } }); } catch(e) {}
       try { Object.defineProperty(window, 'outerWidth',  { configurable: true, get: function() { return _sOW; } }); } catch(e) {}
       try { Object.defineProperty(window, 'outerHeight', { configurable: true, get: function() { return _sOH; } }); } catch(e) {}
-      console.log('[FPSync v2.0.8] Screen: inner', _sIW, 'x', _sIH, '| outer', _sOW, 'x', _sOH, '| chrome', _chromeW, 'x', _chromeH);
+      console.log('[FPSync v2.0.9] Screen: inner', _sIW, 'x', _sIH, '| outer', _sOW, 'x', _sOH, '| chrome', _chromeW, 'x', _chromeH);
     } catch(e) {}
 
     // ── 2c. DOCUMENT ELEMENT DIMENSIONS + DPR ──
@@ -163,8 +163,8 @@
       if (profile.screen.devicePixelRatio !== undefined) {
         try { Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function() { return profile.screen.devicePixelRatio; } }); } catch(ede) {}
       }
-      console.log('[FPSync v2.0.8] DocElement dims + DPR hook OK');
-    } catch(e) { console.warn('[FPSync v2.0.8] DocElement dims failed:', e); }
+      console.log('[FPSync v2.0.9] DocElement dims + DPR hook OK');
+    } catch(e) { console.warn('[FPSync v2.0.9] DocElement dims failed:', e); }
 
     // ── 3. WEBGL FINGERPRINT ──
     function hookWebGLGetParameter(gpu) {
@@ -327,12 +327,12 @@
             },
             set: _styleAccDesc.set
           });
-          console.log('[FPSync v2.0.8] Font: Proxy on style installed OK');
+          console.log('[FPSync v2.0.9] Font: Proxy on style installed OK');
         } else {
-          console.warn('[FPSync v2.0.8] Font: No style accessor descriptor');
+          console.warn('[FPSync v2.0.9] Font: No style accessor descriptor');
         }
       } catch (e) {
-        console.warn('[FPSync v2.0.8] Font: Proxy install failed:', e);
+        console.warn('[FPSync v2.0.9] Font: Proxy install failed:', e);
       }
 
       // Also hook setAttribute('style', ...) — not covered by Proxy
@@ -392,13 +392,13 @@
           }
         });
       }
-      console.log('[FPSync v2.0.8] Offset noise installed (ow:', !!_owDesc, 'oh:', !!_ohDesc, ')');
+      console.log('[FPSync v2.0.9] Offset noise installed (ow:', !!_owDesc, 'oh:', !!_ohDesc, ')');
     } catch(e) {
-      console.warn('[FPSync v2.0.8] Offset noise failed:', e);
+      console.warn('[FPSync v2.0.9] Offset noise failed:', e);
     }
 
     // ── 7. WEBGPU ──
-    // v2.0.8: Also proxy adapter.features and adapter.limits (not just adapter.info)
+    // v2.0.9: Also proxy adapter.features and adapter.limits (not just adapter.info)
     if (navigator.gpu) {
       const origRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
       const _wgpuFeatures = new Set(profile.webgpu.features || []);
@@ -424,7 +424,7 @@
                 limits: _wgpuLimits,
               };
             }
-            // v2.0.8: Proxy direct adapter.features and adapter.limits
+            // v2.0.9: Proxy direct adapter.features and adapter.limits
             if (prop === 'features') return _wgpuFeatures;
             if (prop === 'limits') return _wgpuLimits;
             const val = target[prop];
@@ -437,7 +437,7 @@
 
     // ── 8. TIMEZONE (Intl.DateTimeFormat) ──
     // Fixed: sets timeZone OPTION (not locale) so formatting actually uses spoofed TZ
-    // v2.0.8: Also forces locale from profile language (e.g. ja-JP instead of real browser locale ru)
+    // v2.0.9: Also forces locale from profile language (e.g. ja-JP instead of real browser locale ru)
     try {
       var origDateTimeFormat = Intl.DateTimeFormat;
       var _origDTFSupportedLocalesOf = origDateTimeFormat.supportedLocalesOf;
@@ -561,8 +561,8 @@
         }
       } catch(ef) {}
 
-      console.log('[FPSync v2.0.8] Date/Time: shift=' + _dateShift + 'ms TZ=' + profile.timezone + ' ' + _gmStr + ' (' + _tzAbbr + ')');
-    } catch(e) { console.warn('[FPSync v2.0.8] Date/Time failed:', e); }
+      console.log('[FPSync v2.0.9] Date/Time: shift=' + _dateShift + 'ms TZ=' + profile.timezone + ' ' + _gmStr + ' (' + _tzAbbr + ')');
+    } catch(e) { console.warn('[FPSync v2.0.9] Date/Time failed:', e); }
 
     // ── 9. GEOLOCATION ──
     const TZ_COORDS = {
@@ -588,7 +588,7 @@
     navigator.geolocation.watchPosition = function(s, e, o) { if (s) { const id = setInterval(() => s(makePos()), 5000); return prngInt(1, 99999); } return prngInt(1, 99999); };
 
     // ── 10. MATCH MEDIA / PREFERENCES ──
-    // v2.0.8: Also intercept device-width/device-height media queries to prevent CSS leak
+    // v2.0.9: Also intercept device-width/device-height media queries to prevent CSS leak
     const origMatchMedia = window.matchMedia;
     const _sw = profile.screen.width, _sh = profile.screen.height;
     const _dwRe = /(?:min|max)-device-width\s*:\s*(\d+)/;
@@ -781,7 +781,7 @@
     _prngState = profile.seed | 0;
     // Re-seed the global PRNG used by canvas-hooks.js so canvas noise is deterministic
     if (_globalPrng) _globalPrng.setSeed(profile.seed | 0);
-    console.log('[FPSync v2.0.8] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms', window !== window.top ? '[IFRAME]' : '[TOP]');
+    console.log('[FPSync v2.0.9] Phase 2: Profile loaded, seed:', _prngState, 'at', performance.now().toFixed(1), 'ms', window !== window.top ? '[IFRAME]' : '[TOP]');
     installProfileHooks();
   }
 
@@ -810,10 +810,10 @@
             if (data.fpsync_link_cleaner_aggressive) fpSettings.linkCleaner.aggressive = true;
             if (data.fpsync_link_cleaner_custom_params) fpSettings.linkCleaner.customParams = data.fpsync_link_cleaner_custom_params;
             if (data.fpsync_link_cleaner_custom_prefixes) fpSettings.linkCleaner.customPrefixes = data.fpsync_link_cleaner_custom_prefixes;
-            console.log('[FPSync v2.0.8] Profile loaded from chrome.storage fallback', window !== window.top ? '[IFRAME]' : '[TOP]');
+            console.log('[FPSync v2.0.9] Profile loaded from chrome.storage fallback', window !== window.top ? '[IFRAME]' : '[TOP]');
             onProfileReady();
           } catch(e) {
-            console.warn('[FPSync v2.0.8] Storage fallback parse error:', e);
+            console.warn('[FPSync v2.0.9] Storage fallback parse error:', e);
           }
         });
       }
