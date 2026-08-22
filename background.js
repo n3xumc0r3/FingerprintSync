@@ -108,7 +108,7 @@ async function generateAndStoreProfile() {
   const engine = new ProfileEngine(seed);
   const profile = engine.getProfile();
   await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE]: JSON.stringify(profile) });
-  await applyAllDNRRulesLocked(profile);
+  await applyAllDNRRulesLocked(profile.ua);
   return profile;
 }
 
