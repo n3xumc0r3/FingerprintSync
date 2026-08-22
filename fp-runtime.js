@@ -682,7 +682,7 @@
 
     // ── 14. CUSTOM PROTOCOL SCHEME PROTECTION ──
     const BLOCKED_PROTOCOLS = new Set([
-      'slack','zoom','teams','skype','discord','spotify','telegram','whatsapp','viber',
+      'slack','zoom','teams','skype','discord','spotify','telegram','tg','whatsapp','viber',
       'outlook','steam','epicgames','riotclient','magnet','torrent','thunder',
       'vscode','cursor','intellij','xcode','figma','notion','obsidian',
       '1password','bitwarden','keepassxc','deezer','tidal','zoommtg','msteams',
@@ -690,11 +690,42 @@
     ]);
     const ALLOWED_PROTOCOLS = new Set(['http','https','about','javascript','data','blob','ftp','file']);
     const isCustomProtocol = (url) => { try { const m = String(url).match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); return m && !ALLOWED_PROTOCOLS.has(m[1].toLowerCase()); } catch { return false; } };
+    const isBlockedProtocol = (url) => { try { const m = String(url).match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); return m && BLOCKED_PROTOCOLS.has(m[1].toLowerCase()); } catch { return false; } };
+
+    // 14a. Block window.open() with custom protocols
     const origWindowOpen = window.open;
     window.open = function(url, target, features) {
-      if (typeof url === 'string' && isCustomProtocol(url)) { const m = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/); if (m && BLOCKED_PROTOCOLS.has(m[1].toLowerCase())) return null; }
+      if (typeof url === 'string' && isBlockedProtocol(url)) return null;
       return origWindowOpen.call(this, url, target, features);
     };
+
+    // 14b. Intercept clicks on <a href="tg://..."> etc. (browser handles these natively,
+    //     not via window.open, so we must catch them at the click event level)
+    document.addEventListener('click', function(e) {
+      var el = e.target.closest('a[href]');
+      if (!el) return;
+      var href = el.getAttribute('href');
+      if (typeof href === 'string' && isBlockedProtocol(href)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+
+    // 14c. Block location.assign / location.replace / location.href = with custom protocols
+    var _origAssign = Location.prototype.assign;
+    var _origReplace = Location.prototype.replace;
+    Location.prototype.assign = function(url) { if (typeof url === 'string' && isBlockedProtocol(url)) return; return _origAssign.call(this, url); };
+    Location.prototype.replace = function(url) { if (typeof url === 'string' && isBlockedProtocol(url)) return; return _origReplace.call(this, url); };
+    try {
+      var _hrefDesc = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
+      if (_hrefDesc && _hrefDesc.set) {
+        var _origHrefSet = _hrefDesc.set;
+        Object.defineProperty(Location.prototype, 'href', {
+          ..._hrefDesc,
+          set: function(v) { if (typeof v === 'string' && isBlockedProtocol(v)) return; return _origHrefSet.call(this, v); },
+        });
+      }
+    } catch(e) {}
 
     // ── 15. LOCAL NETWORK PROBING PROTECTION ──
     const isLocalIP = (url) => {
